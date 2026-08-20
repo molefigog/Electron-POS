@@ -1,1 +1,117 @@
 // app global css in SCSS form
+
+:root {
+  --desk-bg-1: #edf2f9;
+  --desk-bg-2: #dbe4f1;
+  --desk-bg-3: #c8d4e6;
+  --desk-accent: #5d88d6;
+  --desk-accent-2: #78b2a8;
+
+  --surface-1: #f8fafe;
+  --surface-2: #e9eef7;
+  --surface-hover: #dde8f9;
+  --accent-bg: #d3e3fb;
+  --accent-border: #88abde;
+  --accent-soft: #3e6cab;
+
+  --text-primary: #000000;
+  --text-secondary: #000000;
+  --text-muted: #000000;
+  --border-color: #c5d0df;
+  --window-shadow: 0 18px 34px rgba(48, 74, 112, 0.24);
+}
+
+body.body--dark {
+  --desk-bg-1: #1f2935;
+  --desk-bg-2: #18202b;
+  --desk-bg-3: #151b24;
+  --desk-accent: #4f78bf;
+  --desk-accent-2: #478f80;
+
+  --surface-1: #242f3d;
+  --surface-2: #1d2733;
+  --surface-hover: #2c394a;
+  --accent-bg: #27384f;
+  --accent-border: #4a6488;
+  --accent-soft: #8ab4ff;
+
+  --text-primary: #ffffff;
+  --text-secondary: #ffffff;
+  --text-muted: #ffffff;
+  --border-color: #3a495d;
+  --window-shadow: 0 18px 36px rgba(0, 0, 0, 0.48);
+}
+
+body {
+  font-family: 'Segoe UI', 'Noto Sans', sans-serif;
+  color: var(--text-primary);
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: subpixel-antialiased;
+  -moz-osx-font-smoothing: auto;
+  font-variant-ligatures: none;
+}
+
+*,
+*::before,
+*::after {
+  text-shadow: none !important;
+}
+
+#q-app {
+  min-height: 100vh;
+}
+
+.text-grey {
+  color: var(--text-muted) !important;
+}
+
+.q-field__native,
+.q-field__label,
+.q-item__label,
+.q-btn,
+.q-tab,
+.q-table,
+.q-markup-table,
+.q-toolbar,
+.text-caption,
+.text-body1,
+.text-body2,
+.text-subtitle1,
+.text-subtitle2,
+.text-h1,
+.text-h2,
+.text-h3,
+.text-h4,
+.text-h5,
+.text-h6 {
+  color: var(--text-primary) !important;
+}
+
+.q-card,
+.q-list,
+.q-table__container,
+.q-markup-table {
+  background: var(--surface-1);
+  border-color: var(--border-color) !important;
+}
+
+.q-markup-table thead tr,
+.q-table thead tr {
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+}
+
+.q-field--filled .q-field__control {
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+}
+
+body.body--dark .q-field--filled .q-field__control {
+  background: color-mix(in srgb, var(--surface-2) 96%, transparent);
+}
+
+.q-item--active {
+  background: var(--accent-bg);
+}
+
+.q-dialog__inner > div {
+  border: 1px solid var(--border-color);
+}

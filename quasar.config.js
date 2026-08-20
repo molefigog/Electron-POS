@@ -11,7 +11,7 @@ export default defineConfig((/* ctx */) => {
     // app boot file (/src/boot)
     // --> boot files are part of "main.js"
     // https://v2.quasar.dev/quasar-cli-vite/boot-files
-    boot: [],
+    boot: ['pinia', 'electron',],
 
     // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#css
     css: ['app.scss'],
@@ -91,12 +91,22 @@ export default defineConfig((/* ctx */) => {
       // directives: [],
 
       // Quasar plugins
-      plugins: [],
+      plugins: [
+        'Cookies',
+        'Dialog',
+        'Loading',
+        // 'LoadingBar',
+        'LocalStorage',
+        'SessionStorage',
+        'Meta',
+        'Notify',
+        'BottomSheet',
+      ],
     },
 
     // animations: 'all', // --- includes all animations
     // https://v2.quasar.dev/options/animations
-    animations: [],
+    animations: 'all',
 
     // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#sourcefiles
     // sourceFiles: {
@@ -161,7 +171,10 @@ export default defineConfig((/* ctx */) => {
     // Full list of options: https://v2.quasar.dev/quasar-cli-vite/developing-electron-apps/configuring-electron
     electron: {
       // extendElectronMainConf (esbuildConf) {},
-      // extendElectronPreloadConf (esbuildConf) {},
+
+      extendElectronPreloadConf(cfg) {
+        cfg.external = [...(cfg.external || []), 'better-sqlite3']
+      }, // 👈 Ensure this closing brace and comma are exactly like this
 
       // extendPackageJson (json) {},
 
@@ -171,7 +184,7 @@ export default defineConfig((/* ctx */) => {
       // specify the debugging port to use for the Electron app when running in development mode
       inspectPort: 5858,
 
-      bundler: 'packager', // 'packager' or 'builder'
+      bundler: 'builder', // 'packager' or 'builder'
 
       packager: {
         // https://github.com/electron-userland/electron-packager/blob/master/docs/api.md#options
@@ -186,10 +199,31 @@ export default defineConfig((/* ctx */) => {
 
       builder: {
         // https://www.electron.build/configuration/configuration
-
         appId: 'erp-system',
+        productName: 'New Interior Decorators (PTY) LTD',
+        directories: {
+          output: 'dist/electron',
+        },
+        files: ['**/*', '!**/*.map'],
+        extraResources: [
+          {
+            from: 'nid-pos.sqlite3',
+            to: 'nid-pos.sqlite3',
+          },
+        ],
+        win: {
+          target: ['nsis'],
+          icon: 'icons/icon.ico',
+          requestedExecutionLevel: 'requireAdministrator',
+        },
+        nsis: {
+          oneClick: false,
+          perMachine: false,
+          allowToChangeInstallationDirectory: true,
+        },
       },
     },
+
 
     // Full list of options: https://v2.quasar.dev/quasar-cli-vite/developing-browser-extensions/configuring-bex
     bex: {
