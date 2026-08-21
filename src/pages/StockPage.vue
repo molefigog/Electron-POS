@@ -2,63 +2,83 @@
   <q-page class="q-pa-md">
     <div class="text-h5 q-mb-md">Stock Management</div>
 
-    <q-card flat bordered class="q-mb-md">
-      <q-card-section>
-        <q-input v-model="search" dense filled clearable placeholder="Search products..." />
-      </q-card-section>
+    <div class="row q-col-gutter-md">
+      <!-- LEFT: Products list -->
+      <div class="col-12 col-md-6">
+        <q-card flat bordered>
+          <q-card-section>
+            <q-input v-model="search" dense filled clearable placeholder="Search products..." />
+          </q-card-section>
 
-      <q-table flat :rows="filteredProducts" :columns="productColumns" row-key="id" :pagination="productPagination"
-        @row-click="onProductRowClick">
-        <template #body-cell-stock_qty="props">
-          <q-td :props="props">
-            <q-badge :color="props.row.stock_qty <= props.row.reorder_level ? 'negative' : 'positive'">
-              {{ props.row.stock_qty }}
-            </q-badge>
-          </q-td>
-        </template>
+          <q-table flat :rows="filteredProducts" :columns="productColumns" row-key="id" :pagination="productPagination"
+            :selected-rows-label="() => ''" :row-class="row => row.id === selected?.id ? 'bg-blue-1' : ''"
+            @row-click="onProductRowClick">
+            <template #body-cell-stock_qty="props">
+              <q-td :props="props">
+                <q-badge :color="props.row.stock_qty <= props.row.reorder_level ? 'negative' : 'positive'">
+                  {{ props.row.stock_qty }}
+                </q-badge>
+              </q-td>
+            </template>
 
-        <template #body-cell-action="props">
-          <q-td :props="props">
-            <q-btn size="sm" color="primary" label="Record" @click.stop="openMovementModal(props.row)" />
-          </q-td>
-        </template>
+            <template #body-cell-action="props">
+              <q-td :props="props">
+                <q-btn size="sm" color="primary" label="Record" @click.stop="openMovementModal(props.row)" />
+              </q-td>
+            </template>
 
-        <template #no-data>
-          <div class="full-width text-center text-grey q-pa-md">No matching products</div>
-        </template>
-      </q-table>
-    </q-card>
+            <template #no-data>
+              <div class="full-width text-center text-grey q-pa-md">No matching products</div>
+            </template>
+          </q-table>
+        </q-card>
+      </div>
 
-    <q-card flat bordered v-if="selected">
-      <q-card-section class="row items-center justify-between">
-        <div class="text-subtitle1">
-          {{ selected.name }} ({{ selected.sku || 'No SKU' }}) - Current Stock: {{ selected.stock_qty }}
-        </div>
-        <q-btn color="primary" label="Record Movement" @click="openMovementModal(selected)" />
-      </q-card-section>
+      <!-- RIGHT: Selected product + movement history -->
+      <div class="col-12 col-md-6">
+        <q-card flat bordered v-if="selected" class="full-height">
+          <q-card-section class="row items-center justify-between">
+            <div>
+              <div class="text-subtitle1">{{ selected.name }} ({{ selected.sku || 'No SKU' }})</div>
+              <div class="text-caption text-grey">Current Stock: {{ selected.stock_qty }}</div>
+            </div>
+            <q-btn color="primary" label="Record Movement" @click="openMovementModal(selected)" />
+          </q-card-section>
 
-      <q-card-section class="text-subtitle1 q-pt-none">Movement History</q-card-section>
-      <q-table flat :rows="stockStore.history" :columns="historyColumns" row-key="id"
-        v-model:pagination="historyPagination" :rows-per-page-options="[8]">
-        <template #body-cell-type="props">
-          <q-td :props="props">
-            <q-badge :color="props.row.type === 'in' ? 'positive' : props.row.type === 'out' ? 'negative' : 'orange'">
-              {{ props.row.type }}
-            </q-badge>
-          </q-td>
-        </template>
+          <q-separator />
 
-        <template #body-cell-created_at="props">
-          <q-td :props="props">
-            {{ new Date(props.row.created_at).toLocaleString() }}
-          </q-td>
-        </template>
+          <q-card-section class="text-subtitle1 q-pb-none">Movement History</q-card-section>
+          <q-table flat :rows="stockStore.history" :columns="historyColumns" row-key="id"
+            v-model:pagination="historyPagination" :rows-per-page-options="[8]">
+            <template #body-cell-type="props">
+              <q-td :props="props">
+                <q-badge
+                  :color="props.row.type === 'in' ? 'positive' : props.row.type === 'out' ? 'negative' : 'orange'">
+                  {{ props.row.type }}
+                </q-badge>
+              </q-td>
+            </template>
 
-        <template #no-data>
-          <div class="full-width text-center text-grey q-pa-md">No movements yet</div>
-        </template>
-      </q-table>
-    </q-card>
+            <template #body-cell-created_at="props">
+              <q-td :props="props">
+                {{ new Date(props.row.created_at).toLocaleString() }}
+              </q-td>
+            </template>
+
+            <template #no-data>
+              <div class="full-width text-center text-grey q-pa-md">No movements yet</div>
+            </template>
+          </q-table>
+        </q-card>
+
+        <q-card v-else flat bordered class="full-height flex flex-center" style="min-height: 200px;">
+          <div class="text-grey text-center q-pa-lg">
+            <q-icon name="inventory_2" size="48px" class="q-mb-sm" />
+            <div>Select a product to view its movement history</div>
+          </div>
+        </q-card>
+      </div>
+    </div>
 
     <q-dialog v-model="movementModalOpen" persistent>
       <q-card style="min-width: 420px; max-width: 95vw;">
@@ -93,6 +113,7 @@
 </template>
 
 <script setup>
+// unchanged — same script block as before
 import { ref, reactive, computed, onMounted } from 'vue';
 import { useQuasar } from 'quasar';
 import { useProductsStore } from 'src/stores/products';

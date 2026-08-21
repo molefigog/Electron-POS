@@ -160,7 +160,14 @@ export function registerIpcHandlers(ipcMain, db) {
    * a numeric suffix is appended automatically if that name is already taken.
    */
   ipcMain.handle('app:printPdf', async (event, { html, defaultFileName }) => {
-    const receiptsDir = path.join(os.homedir(), 'Documents', 'receipts');
+    // Build a "21-Aug-2026" style folder name from today's date
+    const dateFolder = new Date().toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    }).replace(/ /g, '-'); // "21 Aug 2026" -> "21-Aug-2026"
+
+    const receiptsDir = path.join(os.homedir(), 'Documents', 'receipts', dateFolder);
     if (!fs.existsSync(receiptsDir)) {
       fs.mkdirSync(receiptsDir, { recursive: true });
     }
