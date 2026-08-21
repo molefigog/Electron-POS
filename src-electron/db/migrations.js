@@ -301,6 +301,21 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 11,
+    name: 'add_keyboard_shortcuts_setting',
+    up: (db) => {
+      // Stored as a JSON string: { "<combo>": "<actionId>", ... }, e.g.
+      // { "shift+1": "save_quote", "ctrl+1": "new_transaction" }. Combo keys
+      // are what the main process's before-input-event handler looks up on
+      // every keystroke, so this needs to already be in "combo -> action"
+      // shape, not "action -> combo" (see src/constants/shortcuts.js for the
+      // default set and the UI-friendly action list).
+      db.exec(`
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('keyboard_shortcuts', '{}');
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db) {

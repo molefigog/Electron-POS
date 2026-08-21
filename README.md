@@ -28,8 +28,6 @@ erp systems
 
 ## New Version / Feature Requests
 
-- Contact person: Molefi
-- Contact: 266 59073443
 - Email: molefigw@gmail.com
 - Website: https://www.gw-ent.co.za
 

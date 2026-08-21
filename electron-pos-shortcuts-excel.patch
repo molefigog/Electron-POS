@@ -1,0 +1,742 @@
+diff --git a/package.json b/package.json
+index 343c222..54b4662 100644
+--- a/package.json
++++ b/package.json
+@@ -22,7 +22,8 @@
+     "pinia": "^3.0.4",
+     "quasar": "^2.16.0",
+     "vue": "^3.5.22",
+-    "vue-router": "^4.0.0"
++    "vue-router": "^4.0.0",
++    "xlsx": "^0.18.5"
+   },
+   "devDependencies": {
+     "@electron/packager": "^19.1.1",
+diff --git a/src-electron/db/ipc-handlers.js b/src-electron/db/ipc-handlers.js
+index fe80b6a..159db6b 100644
+--- a/src-electron/db/ipc-handlers.js
++++ b/src-electron/db/ipc-handlers.js
+@@ -6,6 +6,7 @@ import { app, BrowserWindow, shell } from 'electron';
+ import fs from 'node:fs';
+ import path from 'node:path';
+ import os from 'node:os';
++import { setShortcutMap } from '../shortcuts.js';
+ 
+ /**
+  * Returns a filename guaranteed not to collide with an existing file in
+@@ -95,6 +96,16 @@ export function registerIpcHandlers(ipcMain, db) {
+ 
+   ipcMain.handle('app:getVersion', () => app.getVersion());
+ 
++  /**
++   * Called from SettingsPage.vue right after saving keyboard_shortcuts, so
++   * the before-input-event handler in electron-main.js starts using the
++   * new combos immediately - no app restart needed.
++   */
++  ipcMain.handle('app:updateShortcuts', (event, map) => {
++    setShortcutMap(map);
++    return { success: true };
++  });
++
+   ipcMain.handle('app:getPrinters', async (event) => {
+     const win = BrowserWindow.fromWebContents(event.sender);
+     if (!win) return [];
+diff --git a/src-electron/db/migrations.js b/src-electron/db/migrations.js
+index 9c4c5f6..8234103 100644
+--- a/src-electron/db/migrations.js
++++ b/src-electron/db/migrations.js
+@@ -301,6 +301,21 @@ const migrations = [
+       `);
+     },
+   },
++  {
++    version: 11,
++    name: 'add_keyboard_shortcuts_setting',
++    up: (db) => {
++      // Stored as a JSON string: { "<combo>": "<actionId>", ... }, e.g.
++      // { "shift+1": "save_quote", "ctrl+1": "new_transaction" }. Combo keys
++      // are what the main process's before-input-event handler looks up on
++      // every keystroke, so this needs to already be in "combo -> action"
++      // shape, not "action -> combo" (see src/constants/shortcuts.js for the
++      // default set and the UI-friendly action list).
++      db.exec(`
++        INSERT OR IGNORE INTO settings (key, value) VALUES ('keyboard_shortcuts', '{}');
++      `);
++    },
++  },
+ ];
+ 
+ export function runMigrations(db) {
+diff --git a/src-electron/electron-main.js b/src-electron/electron-main.js
+index 21d94d5..cf165c3 100644
+--- a/src-electron/electron-main.js
++++ b/src-electron/electron-main.js
+@@ -4,6 +4,7 @@ import os from 'node:os';
+ import { fileURLToPath } from 'node:url';
+ import { initDb, getDb } from './db/connection.js';
+ import { registerIpcHandlers } from './db/ipc-handlers.js';
++import { loadShortcutsFromDb, getShortcutMap, comboFromInput } from './shortcuts.js';
+ 
+ // needed in case process is undefined under Linux
+ const platform = process.platform || os.platform();
+@@ -108,6 +109,7 @@ async function createWindow() {
+   // Initialize SQLite (creates file + runs migrations) BEFORE the window loads,
+   // and BEFORE any IPC handlers are registered, so the renderer never races the DB.
+   await initDb();
++  loadShortcutsFromDb(getDb());
+   registerIpcHandlers(ipcMain, getDb());
+ 
+   mainWindow = new BrowserWindow({
+@@ -124,6 +126,23 @@ async function createWindow() {
+     },
+   });
+ 
++  // Intercepted here, before Chromium's default handling, so it works
++  // regardless of which element has focus (including inputs where a plain
++  // renderer keydown listener can get eaten by native behavior) and can't
++  // be blocked by a component that stops event propagation. Only digit keys
++  // combined with exactly one modifier ever match (see comboFromInput), so
++  // normal typing is never affected.
++  mainWindow.webContents.on('before-input-event', (event, input) => {
++    if (input.type !== 'keyDown') return;
++    const combo = comboFromInput(input);
++    if (!combo) return;
++    const action = getShortcutMap()[combo];
++    if (action) {
++      event.preventDefault();
++      mainWindow.webContents.send('shortcut:trigger', action);
++    }
++  });
++
+   if (process.env.DEV) {
+     mainWindow.loadURL(process.env.APP_URL);
+   } else {
+diff --git a/src-electron/electron-preload.js b/src-electron/electron-preload.js
+index fc5533a..b9708b5 100644
+--- a/src-electron/electron-preload.js
++++ b/src-electron/electron-preload.js
+@@ -34,4 +34,11 @@ contextBridge.exposeInMainWorld('appBridge', {
+   getPrinters: () => ipcRenderer.invoke('app:getPrinters'),
+   getVersion: () => ipcRenderer.invoke('app:getVersion'),
+   updateBranding: (payload) => ipcRenderer.invoke('app:updateBranding', toPlain(payload)),
++  updateShortcuts: (map) => ipcRenderer.invoke('app:updateShortcuts', toPlain(map)),
++  /** callback(actionId) fires whenever a mapped Ctrl/Shift+digit combo is pressed anywhere in the window. Returns an unsubscribe function. */
++  onShortcut: (callback) => {
++    const listener = (_event, actionId) => callback(actionId);
++    ipcRenderer.on('shortcut:trigger', listener);
++    return () => ipcRenderer.removeListener('shortcut:trigger', listener);
++  },
+ });
+diff --git a/src-electron/shortcuts.js b/src-electron/shortcuts.js
+new file mode 100644
+index 0000000..58bea62
+--- /dev/null
++++ b/src-electron/shortcuts.js
+@@ -0,0 +1,41 @@
++import { SettingsRepository } from './db/repositories.js';
++
++/** Module-level singleton so both electron-main.js (before-input-event) and ipc-handlers.js (the update endpoint) see the same live map without extra plumbing. */
++let currentMap = {};
++
++export function loadShortcutsFromDb(db) {
++  const settingsRepo = new SettingsRepository(db);
++  const raw = settingsRepo.get('keyboard_shortcuts', '{}');
++  try {
++    currentMap = JSON.parse(raw) || {};
++  } catch {
++    currentMap = {};
++  }
++  return currentMap;
++}
++
++export function getShortcutMap() {
++  return currentMap;
++}
++
++export function setShortcutMap(map) {
++  currentMap = map && typeof map === 'object' ? map : {};
++}
++
++/**
++ * Builds a normalized combo string like "ctrl+1" or "shift+7" from an
++ * Electron `before-input-event` `input` object, or null if this keystroke
++ * isn't a shortcut candidate. Deliberately narrow: exactly one modifier
++ * (ctrl or shift - meta is treated as ctrl for cross-platform consistency)
++ * plus a single digit 0-9. This is what keeps the feature from ever
++ * colliding with normal typing, text editing, or other app shortcuts.
++ */
++export function comboFromInput(input) {
++  if (!/^[0-9]$/.test(input.key)) return null;
++  if (input.alt) return null; // keep Alt combos free for OS/menu use
++  const mods = [];
++  if (input.control || input.meta) mods.push('ctrl');
++  if (input.shift) mods.push('shift');
++  if (mods.length !== 1) return null;
++  return `${mods[0]}+${input.key}`;
++}
+diff --git a/src/components/transactions/TransactionForm.vue b/src/components/transactions/TransactionForm.vue
+index 3b61a6f..7b55879 100644
+--- a/src/components/transactions/TransactionForm.vue
++++ b/src/components/transactions/TransactionForm.vue
+@@ -33,8 +33,9 @@
+     <div class="transaction-form__products">
+       <div class="row q-col-gutter-sm items-center">
+         <div class="col-6">
+-          <q-select v-model="productPick" :options="productOptions" label="Add product (search by name)" use-input
+-            emit-value map-options @filter="filterProducts" @update:model-value="onPickProduct" />
++          <q-select ref="productSelectRef" v-model="productPick" :options="productOptions"
++            label="Add product (search by name)" use-input emit-value map-options @filter="filterProducts"
++            @update:model-value="onPickProduct" />
+         </div>
+         <div class="col-6">
+           <q-input ref="skuInputRef" v-model="skuInput" label="SKU / Barcode (auto-adds on match)" dense filled>
+@@ -48,6 +49,7 @@
+       <q-markup-table flat bordered class="transaction-form__table">
+         <thead>
+           <tr>
++            <th style="width: 32px"></th>
+             <th style="width: 28px"></th>
+             <th class="text-left">Item</th>
+             <th class="text-left">Qty</th>
+@@ -63,6 +65,11 @@
+           <tr v-for="(item, idx) in draft.lineItems" :key="idx"
+             :class="{ 'row-active': idx === activeRowIndex, 'row-drag-over': idx === dragOverIndex }"
+             @dragover.prevent="dragOverIndex = idx" @dragleave="dragOverIndex = null" @drop="onDrop(idx)">
++            <td class="text-center">
++              <q-checkbox :model-value="idx === activeRowIndex" dense @update:model-value="focusRow(idx)">
++                <q-tooltip>Select row (for keyboard shortcuts and Up/Down navigation)</q-tooltip>
++              </q-checkbox>
++            </td>
+             <td>
+               <q-icon name="drag_indicator" class="drag-handle" draggable="true" @dragstart="onDragStart(idx)"
+                 @dragend="onDragEnd">
+@@ -103,7 +110,7 @@
+             <td><q-btn flat dense round icon="close" size="sm" @click="transactionsStore.removeLineItem(idx)" /></td>
+           </tr>
+           <tr v-if="!draft.lineItems.length">
+-            <td colspan="9" class="text-center text-grey q-py-md">No items yet - search, scan, or type a SKU above</td>
++            <td colspan="10" class="text-center text-grey q-py-md">No items yet - search, scan, or type a SKU above</td>
+           </tr>
+         </tbody>
+       </q-markup-table>
+@@ -133,13 +140,14 @@
+ </template>
+ 
+ <script setup>
+-import { ref, reactive, computed, watch, nextTick, onMounted } from 'vue';
++import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
+ import { useQuasar } from 'quasar';
+ import { useTransactionsStore } from 'src/stores/transactions';
+ import { useCustomersStore } from 'src/stores/customers';
+ import { useProductsStore } from 'src/stores/products';
+ import { useCurrency } from 'src/composables/useCurrency';
+ import { useBarcodeScanner } from 'src/composables/useBarcodeScanner';
++import { onUiEvent } from 'src/composables/useUiEvents';
+ 
+ const $q = useQuasar();
+ const transactionsStore = useTransactionsStore();
+@@ -150,6 +158,7 @@ const { format } = useCurrency();
+ const draft = computed(() => transactionsStore.draft);
+ const isPurchaseOrder = computed(() => draft.value.type === 'purchase_order');
+ const productPick = ref(null);
++const productSelectRef = ref(null);
+ const skuInput = ref('');
+ const skuInputRef = ref(null);
+ 
+@@ -283,7 +292,7 @@ function filterProducts(val, update) {
+   update(() => {
+     productOptions.value = productsStore.items
+       .filter((p) => p.name.toLowerCase().includes((val || '').toLowerCase()) || p.sku?.includes(val || ''))
+-      .map((p) => ({ label: `${p.name}  (${format(p.selling_price)})`, value: p.id, product: p }));
++      .map((p, i) => ({ label: `${i + 1}. ${p.name}  (${format(p.selling_price)})`, value: p.id, product: p }));
+   });
+ }
+ 
+@@ -358,6 +367,33 @@ onMounted(async () => {
+   filterCustomers('', (fn) => fn());
+   filterProducts('', (fn) => fn());
+ });
++
++// --- Cart shortcut relays -------------------------------------------------
++// MainLayout.vue owns the global Ctrl/Shift+digit dispatch (it's the only
++// place with access to appBridge.onShortcut across route changes) and
++// relays cart-specific actions here via a small window CustomEvent bus,
++// since this component owns the state those actions actually act on.
++const unsubscribers = [
++  onUiEvent('focus-product-search', () => {
++    nextTick(() => productSelectRef.value?.focus?.());
++  }),
++  onUiEvent('focus-sku', () => {
++    nextTick(() => skuInputRef.value?.focus?.());
++  }),
++  onUiEvent('add-customer', () => {
++    showNewCustomer.value = true;
++  }),
++  onUiEvent('remove-active-row', () => {
++    if (activeRowIndex.value >= 0 && activeRowIndex.value < draft.value.lineItems.length) {
++      transactionsStore.removeLineItem(activeRowIndex.value);
++      activeRowIndex.value = -1;
++    }
++  }),
++];
++
++onBeforeUnmount(() => {
++  unsubscribers.forEach((unsub) => unsub());
++});
+ </script>
+ 
+ <style scoped>
+diff --git a/src/composables/useUiEvents.js b/src/composables/useUiEvents.js
+new file mode 100644
+index 0000000..02b3316
+--- /dev/null
++++ b/src/composables/useUiEvents.js
+@@ -0,0 +1,20 @@
++/**
++ * Deliberately minimal: a shortcut fired in MainLayout.vue needs to reach
++ * into whatever's currently focus-worthy inside TransactionForm.vue (focus
++ * a field, open a dialog, remove the active row) without either component
++ * needing to know about the other's internals. A CustomEvent on `window`
++ * is enough for this - only one TransactionForm is ever mounted at a time,
++ * so there's no ambiguity about who's listening.
++ */
++const PREFIX = 'pos:';
++
++export function emitUiEvent(name, detail) {
++  window.dispatchEvent(new CustomEvent(PREFIX + name, { detail }));
++}
++
++/** Returns an unsubscribe function - call it in onBeforeUnmount. */
++export function onUiEvent(name, handler) {
++  const wrapped = (e) => handler(e.detail);
++  window.addEventListener(PREFIX + name, wrapped);
++  return () => window.removeEventListener(PREFIX + name, wrapped);
++}
+diff --git a/src/constants/shortcuts.js b/src/constants/shortcuts.js
+new file mode 100644
+index 0000000..de81ce1
+--- /dev/null
++++ b/src/constants/shortcuts.js
+@@ -0,0 +1,68 @@
++/**
++ * The full catalog of remappable keyboard shortcuts. Each action has a
++ * stable `id` (never rename these - they're what's stored in the DB and
++ * matched in MainLayout.vue's dispatcher), a human label for the Settings
++ * UI, and a `default` combo.
++ *
++ * Combo format: "<modifier>+<digit>", modifier is exactly one of
++ * ctrl/shift, digit is 0-9. Kept intentionally narrow (see
++ * src-electron/shortcuts.js's comboFromInput) so this never collides with
++ * normal typing, text editing shortcuts, or Quasar's own component
++ * keybindings.
++ */
++export const SHORTCUT_ACTIONS = [
++  { id: 'save_quote', label: 'Save as Quotation', group: 'Save', default: 'shift+1' },
++  { id: 'save_invoice', label: 'Save as Invoice', group: 'Save', default: 'shift+2' },
++  { id: 'save_purchase_order', label: 'Save as Purchase Order', group: 'Save', default: 'shift+3' },
++  { id: 'save_draft', label: 'Save as Draft', group: 'Save', default: 'shift+4' },
++
++  { id: 'new_transaction', label: 'New Transaction', group: 'Cart', default: 'ctrl+1' },
++  { id: 'open_recent', label: 'Open Recent Transactions', group: 'Cart', default: 'ctrl+2' },
++  { id: 'focus_product_search', label: 'Focus Product Search', group: 'Cart', default: 'ctrl+3' },
++  { id: 'focus_sku', label: 'Focus SKU / Barcode Field', group: 'Cart', default: 'ctrl+4' },
++  { id: 'add_customer', label: 'Add New Customer', group: 'Cart', default: 'ctrl+5' },
++  { id: 'remove_active_row', label: 'Remove Selected Cart Row', group: 'Cart', default: 'ctrl+6' },
++];
++
++/** All valid combos: ctrl/shift + 0-9, e.g. "ctrl+1", "shift+7". Used to populate the picker in Settings. */
++export const AVAILABLE_COMBOS = (() => {
++  const combos = [];
++  for (const mod of ['ctrl', 'shift']) {
++    for (let d = 0; d <= 9; d += 1) combos.push(`${mod}+${d}`);
++  }
++  return combos;
++})();
++
++export function formatCombo(combo) {
++  if (!combo) return '';
++  const [mod, digit] = combo.split('+');
++  return `${mod === 'ctrl' ? 'Ctrl' : 'Shift'} + ${digit}`;
++}
++
++/** { "shift+1": "save_quote", ... } - the shape stored in settings.keyboard_shortcuts and read by the Electron main process. */
++export function defaultShortcutMap() {
++  const map = {};
++  for (const action of SHORTCUT_ACTIONS) map[action.default] = action.id;
++  return map;
++}
++
++/** Merge a possibly-partial saved map with defaults for any action that isn't explicitly mapped (or was mapped to ""). */
++export function withDefaults(savedMap) {
++  const merged = { ...defaultShortcutMap() };
++  if (savedMap && typeof savedMap === 'object') {
++    // Saved map wins for any combo explicitly set - but first strip out any
++    // combo the saved map re-points to a *different* action than default,
++    // so re-assigning a combo in Settings correctly "steals" it.
++    for (const [combo, actionId] of Object.entries(savedMap)) {
++      if (SHORTCUT_ACTIONS.some((a) => a.id === actionId)) merged[combo] = actionId;
++    }
++  }
++  return merged;
++}
++
++/** Converts a combo->action map into action->combo, for populating the Settings form. */
++export function toActionComboMap(comboActionMap) {
++  const out = {};
++  for (const [combo, actionId] of Object.entries(comboActionMap || {})) out[actionId] = combo;
++  return out;
++}
+diff --git a/src/layouts/MainLayout.vue b/src/layouts/MainLayout.vue
+index 9ff8454..1189d60 100644
+--- a/src/layouts/MainLayout.vue
++++ b/src/layouts/MainLayout.vue
+@@ -137,6 +137,7 @@ import { useTransactionsStore } from 'src/stores/transactions';
+ import { useSettingsStore } from 'src/stores/settings';
+ import { useCurrency } from 'src/composables/useCurrency';
+ import { usePrintDocument } from 'src/composables/usePrintDocument';
++import { emitUiEvent } from 'src/composables/useUiEvents';
+ import TemplateSwitcher from 'src/components/print-templates/TemplateSwitcher.vue';
+ import TransactionList from 'src/components/transactions/TransactionList.vue';
+ 
+@@ -322,6 +323,72 @@ async function saveTransaction(saveAs) {
+   }
+ }
+ 
++// --- Global keyboard shortcuts -------------------------------------------------
++// Ctrl/Shift+digit combos are intercepted in the Electron main process
++// (before-input-event, see src-electron/shortcuts.js) so they work no matter
++// what has focus, then arrive here via appBridge.onShortcut. Save/navigation
++// actions are handled directly; cart-specific ones (focusing a field inside
++// TransactionForm, opening its "add customer" dialog, removing its active
++// row) are relayed onward through a tiny event bus since that state lives in
++// a child component this layout doesn't otherwise reach into.
++function handleShortcut(actionId) {
++  if (!isTransactionsRoute.value) return;
++  switch (actionId) {
++    case 'save_quote':
++      saveTransaction('quote');
++      break;
++    case 'save_invoice':
++      saveTransaction('invoice');
++      break;
++    case 'save_purchase_order':
++      saveTransaction('purchase_order');
++      break;
++    case 'save_draft':
++      saveTransaction('draft');
++      break;
++    case 'new_transaction':
++      startNewFromMode();
++      break;
++    case 'open_recent':
++      openRecentTransactions();
++      break;
++    case 'focus_product_search':
++      emitUiEvent('focus-product-search');
++      break;
++    case 'focus_sku':
++      emitUiEvent('focus-sku');
++      break;
++    case 'add_customer':
++      emitUiEvent('add-customer');
++      break;
++    case 'remove_active_row':
++      emitUiEvent('remove-active-row');
++      break;
++    default:
++      break;
++  }
++}
++
++let unsubscribeShortcut = null;
++
++/**
++ * Enter saves the current transaction - but only when that's unambiguous:
++ * not while typing in a textarea (Notes, customer address), and not while
++ * any dialog or popup menu is open (the "New Customer" dialog, the product/
++ * customer dropdown, the post-save dialog) - those all have their own
++ * meaning for Enter, which must win.
++ */
++function onGlobalKeydown(e) {
++  if (e.key !== 'Enter') return;
++  if (!isTransactionsRoute.value) return;
++  const tag = e.target?.tagName?.toLowerCase();
++  if (tag === 'textarea') return;
++  if (document.querySelector('.q-dialog, .q-menu')) return;
++  if (!transactionsStore.draft.lineItems.length) return;
++  e.preventDefault();
++  saveTransaction(primaryActionType.value);
++}
++
+ function onTemplateChange(val) {
+   settingsStore.update({ print_template: val });
+ }
+@@ -500,11 +567,18 @@ onMounted(() => {
+     const headerEl = headerRef.value?.$el || headerRef.value;
+     if (headerEl) resizeObserver.observe(headerEl);
+   }
++
++  if (window.appBridge?.onShortcut) {
++    unsubscribeShortcut = window.appBridge.onShortcut(handleShortcut);
++  }
++  window.addEventListener('keydown', onGlobalKeydown);
+ });
+ 
+ onBeforeUnmount(() => {
+   stopDrag();
+   if (resizeObserver) resizeObserver.disconnect();
++  if (unsubscribeShortcut) unsubscribeShortcut();
++  window.removeEventListener('keydown', onGlobalKeydown);
+ });
+ </script>
+ 
+diff --git a/src/pages/ProductsPage.vue b/src/pages/ProductsPage.vue
+index 64415c2..3cc1ec8 100644
+--- a/src/pages/ProductsPage.vue
++++ b/src/pages/ProductsPage.vue
+@@ -13,6 +13,9 @@
+         :label="`Delete Selected (${selectedRows.length})`" class="q-mr-sm" @click="deleteSelected" />
+       <q-btn v-if="hasSelectedRows" flat color="primary" icon="download"
+         :label="`Export Selected (${selectedRows.length})`" class="q-mr-sm" @click="exportSelectedCsv" />
++      <q-btn flat color="positive" icon="grid_on"
++        :label="hasSelectedRows ? `Export Selected to Excel (${selectedRows.length})` : 'Export All to Excel'"
++        class="q-mr-sm" @click="exportToExcel" />
+       <q-btn flat color="primary" icon="upload_file" label="Import CSV" class="q-mr-sm" @click="showImport = true" />
+       <q-btn color="primary" icon="add" label="New Product" @click="openForm(null)" />
+     </div>
+@@ -102,6 +105,7 @@ import { ref, reactive, computed, onMounted } from 'vue';
+ import { useQuasar } from 'quasar';
+ import { useProductsStore } from 'src/stores/products';
+ import { BaseRepository } from 'src/services/repositories/BaseRepository';
++import * as XLSX from 'xlsx';
+ 
+ const $q = useQuasar();
+ const productsStore = useProductsStore();
+@@ -268,6 +272,47 @@ function exportSelectedCsv() {
+   $q.notify({ type: 'positive', message: `Exported ${selectedRows.value.length} product(s)` });
+ }
+ 
++/**
++ * Excel export, per the requirement: exports the SELECTED rows if any are
++ * checked, otherwise exports ALL products currently loaded in the table
++ * (i.e. everything matching the current search filter). One button, same
++ * "selection wins if present" convention as the CSV export above.
++ */
++function buildExcelRows(rows) {
++  return rows.map((row) => ({
++    Name: row.name,
++    SKU: row.sku || '',
++    Barcode: row.barcode || '',
++    'Cost Price': row.cost_price,
++    'Selling Price': row.selling_price,
++    Stock: row.stock_qty,
++    'Reorder Level': row.reorder_level,
++    Category: row.category_name || '',
++  }));
++}
++
++function exportToExcel() {
++  const usingSelection = selectedRows.value.length > 0;
++  const rows = usingSelection ? selectedRows.value : productsStore.items;
++
++  if (!rows.length) {
++    $q.notify({ type: 'warning', message: 'No products to export' });
++    return;
++  }
++
++  const worksheet = XLSX.utils.json_to_sheet(buildExcelRows(rows));
++  worksheet['!cols'] = [{ wch: 28 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 18 }];
++  const workbook = XLSX.utils.book_new();
++  XLSX.utils.book_append_sheet(workbook, worksheet, 'Products');
++
++  const now = new Date();
++  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
++  const filename = `products-${usingSelection ? 'selected' : 'all'}-${stamp}.xlsx`;
++  XLSX.writeFile(workbook, filename);
++
++  $q.notify({ type: 'positive', message: `Exported ${rows.length} product(s) to ${filename}` });
++}
++
+ function load() {
+   productsStore.fetchAll({ search: search.value });
+ }
+diff --git a/src/pages/SettingsPage.vue b/src/pages/SettingsPage.vue
+index 41f4189..ded1f66 100644
+--- a/src/pages/SettingsPage.vue
++++ b/src/pages/SettingsPage.vue
+@@ -144,6 +144,30 @@
+       </q-card-section>
+     </q-card>
+ 
++    <q-card flat bordered class="q-mb-md">
++      <q-card-section class="row items-center">
++        <div class="text-subtitle1">Keyboard Shortcuts</div>
++        <q-space />
++        <q-btn flat dense no-caps icon="restart_alt" label="Reset to Defaults" @click="resetShortcuts" />
++      </q-card-section>
++      <q-card-section>
++        <div class="text-caption text-grey q-mb-sm">
++          Fast, mouse-free cart entry. Combos are Ctrl or Shift plus a number key, and work anywhere in the app -
++          even while a text field is focused. Assign the same combo to two actions and the newest one wins, so keep
++          each combo unique.
++        </div>
++        <div v-for="group in shortcutGroups" :key="group.name" class="shortcut-group">
++          <div class="shortcut-group__title">{{ group.name }}</div>
++          <div class="row q-col-gutter-sm">
++            <div class="col-12 col-sm-6" v-for="action in group.actions" :key="action.id">
++              <q-select v-model="form.shortcutsByAction[action.id]" :options="comboOptions" emit-value map-options
++                filled dense :label="action.label" clearable />
++            </div>
++          </div>
++        </div>
++      </q-card-section>
++    </q-card>
++
+     <q-card flat bordered class="q-mb-md">
+       <q-card-section class="text-subtitle1">Document Numbering</q-card-section>
+       <q-card-section class="row q-col-gutter-sm">
+@@ -158,10 +182,13 @@
+ </template>
+ 
+ <script setup>
+-import { ref, reactive, onMounted } from 'vue';
++import { ref, reactive, computed, onMounted } from 'vue';
+ import { useQuasar } from 'quasar';
+ import { useSettingsStore } from 'src/stores/settings';
+ import TemplateSwitcher from 'src/components/print-templates/TemplateSwitcher.vue';
++import {
++  SHORTCUT_ACTIONS, AVAILABLE_COMBOS, formatCombo, defaultShortcutMap, withDefaults, toActionComboMap,
++} from 'src/constants/shortcuts';
+ 
+ const $q = useQuasar();
+ const settingsStore = useSettingsStore();
+@@ -202,8 +229,28 @@ const form = reactive({
+   default_printer: '',
+   silent_printing: false,
+   theme_mode: 'system',
++  shortcutsByAction: {}, // { [actionId]: combo } - UI-friendly shape; converted to combo->action JSON on save
+ });
+ 
++const comboOptions = computed(() => AVAILABLE_COMBOS.map((combo) => ({ label: formatCombo(combo), value: combo })));
++const shortcutGroups = computed(() => {
++  const groups = [];
++  for (const action of SHORTCUT_ACTIONS) {
++    let group = groups.find((g) => g.name === action.group);
++    if (!group) {
++      group = { name: action.group, actions: [] };
++      groups.push(group);
++    }
++    group.actions.push(action);
++  }
++  return groups;
++});
++
++function resetShortcuts() {
++  form.shortcutsByAction = { ...toActionComboMap(defaultShortcutMap()) };
++  $q.notify({ type: 'info', message: 'Shortcuts reset - click Save Settings to apply', timeout: 2500 });
++}
++
+ async function loadPrinters() {
+   if (!window.appBridge?.getPrinters) {
+     printerOptions.value = [];
+@@ -268,6 +315,23 @@ function removeStamp() {
+ }
+ 
+ async function save() {
++  const comboToAction = {};
++  const seenCombos = new Map();
++  for (const action of SHORTCUT_ACTIONS) {
++    const combo = form.shortcutsByAction[action.id];
++    if (!combo) continue;
++    if (seenCombos.has(combo)) {
++      $q.notify({
++        type: 'negative',
++        message: `"${formatCombo(combo)}" is assigned to both "${seenCombos.get(combo)}" and "${action.label}" - each combo must be unique.`,
++        timeout: 6000,
++      });
++      return;
++    }
++    seenCombos.set(combo, action.label);
++    comboToAction[combo] = action.id;
++  }
++
+   saving.value = true;
+   try {
+     await settingsStore.update({
+@@ -277,6 +341,7 @@ async function save() {
+       print_font_weight: String(form.print_font_weight),
+       default_printer: form.default_printer || '',
+       silent_printing: String(!!form.silent_printing),
++      keyboard_shortcuts: JSON.stringify(comboToAction),
+     });
+     $q.notify({ type: 'positive', message: 'Settings saved' });
+   } catch (err) {
+@@ -293,6 +358,15 @@ onMounted(async () => {
+   form.print_font_size = Number(settingsStore.values.print_font_size || 12);
+   form.print_font_weight = Number(settingsStore.values.print_font_weight || 400);
+   form.silent_printing = String(settingsStore.values.silent_printing || 'false') === 'true';
++
++  let savedMap = {};
++  try {
++    savedMap = JSON.parse(settingsStore.values.keyboard_shortcuts || '{}');
++  } catch {
++    savedMap = {};
++  }
++  form.shortcutsByAction = toActionComboMap(withDefaults(savedMap));
++
+   await loadPrinters();
+ });
+ </script>
+@@ -322,6 +396,23 @@ onMounted(async () => {
+   text-align: center;
+ }
+ 
++.shortcut-group {
++  margin-bottom: 14px;
++}
++
++.shortcut-group:last-child {
++  margin-bottom: 0;
++}
++
++.shortcut-group__title {
++  font-size: 11px;
++  text-transform: uppercase;
++  letter-spacing: 0.06em;
++  color: var(--text-muted);
++  margin-bottom: 6px;
++  font-weight: 600;
++}
++
+ .settings-grid-row {
+   margin-bottom: 2px;
+ }
+diff --git a/src/stores/settings.js b/src/stores/settings.js
+index a22c080..42735fb 100644
+--- a/src/stores/settings.js
++++ b/src/stores/settings.js
+@@ -25,6 +25,7 @@ const DEFAULT_SETTINGS = {
+   default_printer: '',
+   silent_printing: 'false',
+   theme_mode: 'system',
++  keyboard_shortcuts: '{}',
+ };
+ 
+ function resolveThemeMode(mode) {
+@@ -72,6 +73,16 @@ export const useSettingsStore = defineStore('settings', {
+       this.values = { ...DEFAULT_SETTINGS, ...this.values };
+       this.applyTheme();
+       syncBranding(this.values);
++
++      if (values.keyboard_shortcuts !== undefined && window.appBridge?.updateShortcuts) {
++        try {
++          const map = JSON.parse(this.values.keyboard_shortcuts || '{}');
++          await window.appBridge.updateShortcuts(map);
++        } catch {
++          // Malformed JSON shouldn't block the rest of settings from saving.
++        }
++      }
++
+       return this.values;
+     },
+   },

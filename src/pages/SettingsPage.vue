@@ -145,6 +145,30 @@
     </q-card>
 
     <q-card flat bordered class="q-mb-md">
+      <q-card-section class="row items-center">
+        <div class="text-subtitle1">Keyboard Shortcuts</div>
+        <q-space />
+        <q-btn flat dense no-caps icon="restart_alt" label="Reset to Defaults" @click="resetShortcuts" />
+      </q-card-section>
+      <q-card-section>
+        <div class="text-caption text-grey q-mb-sm">
+          Fast, mouse-free cart entry. Combos are Ctrl or Shift plus a number key, and work anywhere in the app -
+          even while a text field is focused. Assign the same combo to two actions and the newest one wins, so keep
+          each combo unique.
+        </div>
+        <div v-for="group in shortcutGroups" :key="group.name" class="shortcut-group">
+          <div class="shortcut-group__title">{{ group.name }}</div>
+          <div class="row q-col-gutter-sm">
+            <div class="col-12 col-sm-6" v-for="action in group.actions" :key="action.id">
+              <q-select v-model="form.shortcutsByAction[action.id]" :options="comboOptions" emit-value map-options
+                filled dense :label="action.label" clearable />
+            </div>
+          </div>
+        </div>
+      </q-card-section>
+    </q-card>
+
+    <q-card flat bordered class="q-mb-md">
       <q-card-section class="text-subtitle1">Document Numbering</q-card-section>
       <q-card-section class="row q-col-gutter-sm">
         <div class="col-4"><q-input v-model="form.quote_prefix" label="Quotation Prefix" filled /></div>
@@ -158,10 +182,13 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted } from 'vue';
 import { useQuasar } from 'quasar';
 import { useSettingsStore } from 'src/stores/settings';
 import TemplateSwitcher from 'src/components/print-templates/TemplateSwitcher.vue';
+import {
+  SHORTCUT_ACTIONS, AVAILABLE_COMBOS, formatCombo, defaultShortcutMap, withDefaults, toActionComboMap,
+} from 'src/constants/shortcuts';
 
 const $q = useQuasar();
 const settingsStore = useSettingsStore();
@@ -202,7 +229,27 @@ const form = reactive({
   default_printer: '',
   silent_printing: false,
   theme_mode: 'system',
+  shortcutsByAction: {}, // { [actionId]: combo } - UI-friendly shape; converted to combo->action JSON on save
 });
+
+const comboOptions = computed(() => AVAILABLE_COMBOS.map((combo) => ({ label: formatCombo(combo), value: combo })));
+const shortcutGroups = computed(() => {
+  const groups = [];
+  for (const action of SHORTCUT_ACTIONS) {
+    let group = groups.find((g) => g.name === action.group);
+    if (!group) {
+      group = { name: action.group, actions: [] };
+      groups.push(group);
+    }
+    group.actions.push(action);
+  }
+  return groups;
+});
+
+function resetShortcuts() {
+  form.shortcutsByAction = { ...toActionComboMap(defaultShortcutMap()) };
+  $q.notify({ type: 'info', message: 'Shortcuts reset - click Save Settings to apply', timeout: 2500 });
+}
 
 async function loadPrinters() {
   if (!window.appBridge?.getPrinters) {
@@ -268,6 +315,23 @@ function removeStamp() {
 }
 
 async function save() {
+  const comboToAction = {};
+  const seenCombos = new Map();
+  for (const action of SHORTCUT_ACTIONS) {
+    const combo = form.shortcutsByAction[action.id];
+    if (!combo) continue;
+    if (seenCombos.has(combo)) {
+      $q.notify({
+        type: 'negative',
+        message: `"${formatCombo(combo)}" is assigned to both "${seenCombos.get(combo)}" and "${action.label}" - each combo must be unique.`,
+        timeout: 6000,
+      });
+      return;
+    }
+    seenCombos.set(combo, action.label);
+    comboToAction[combo] = action.id;
+  }
+
   saving.value = true;
   try {
     await settingsStore.update({
@@ -277,6 +341,7 @@ async function save() {
       print_font_weight: String(form.print_font_weight),
       default_printer: form.default_printer || '',
       silent_printing: String(!!form.silent_printing),
+      keyboard_shortcuts: JSON.stringify(comboToAction),
     });
     $q.notify({ type: 'positive', message: 'Settings saved' });
   } catch (err) {
@@ -293,6 +358,15 @@ onMounted(async () => {
   form.print_font_size = Number(settingsStore.values.print_font_size || 12);
   form.print_font_weight = Number(settingsStore.values.print_font_weight || 400);
   form.silent_printing = String(settingsStore.values.silent_printing || 'false') === 'true';
+
+  let savedMap = {};
+  try {
+    savedMap = JSON.parse(settingsStore.values.keyboard_shortcuts || '{}');
+  } catch {
+    savedMap = {};
+  }
+  form.shortcutsByAction = toActionComboMap(withDefaults(savedMap));
+
   await loadPrinters();
 });
 </script>
@@ -320,6 +394,23 @@ onMounted(async () => {
   font-size: 11px;
   color: var(--text-muted);
   text-align: center;
+}
+
+.shortcut-group {
+  margin-bottom: 14px;
+}
+
+.shortcut-group:last-child {
+  margin-bottom: 0;
+}
+
+.shortcut-group__title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  font-weight: 600;
 }
 
 .settings-grid-row {

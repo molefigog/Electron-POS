@@ -25,6 +25,7 @@ const DEFAULT_SETTINGS = {
   default_printer: '',
   silent_printing: 'false',
   theme_mode: 'system',
+  keyboard_shortcuts: '{}',
 };
 
 function resolveThemeMode(mode) {
@@ -72,6 +73,16 @@ export const useSettingsStore = defineStore('settings', {
       this.values = { ...DEFAULT_SETTINGS, ...this.values };
       this.applyTheme();
       syncBranding(this.values);
+
+      if (values.keyboard_shortcuts !== undefined && window.appBridge?.updateShortcuts) {
+        try {
+          const map = JSON.parse(this.values.keyboard_shortcuts || '{}');
+          await window.appBridge.updateShortcuts(map);
+        } catch {
+          // Malformed JSON shouldn't block the rest of settings from saving.
+        }
+      }
+
       return this.values;
     },
   },

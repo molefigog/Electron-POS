@@ -137,6 +137,7 @@ import { useTransactionsStore } from 'src/stores/transactions';
 import { useSettingsStore } from 'src/stores/settings';
 import { useCurrency } from 'src/composables/useCurrency';
 import { usePrintDocument } from 'src/composables/usePrintDocument';
+import { emitUiEvent } from 'src/composables/useUiEvents';
 import TemplateSwitcher from 'src/components/print-templates/TemplateSwitcher.vue';
 import TransactionList from 'src/components/transactions/TransactionList.vue';
 
@@ -322,6 +323,72 @@ async function saveTransaction(saveAs) {
   }
 }
 
+// --- Global keyboard shortcuts -------------------------------------------------
+// Ctrl/Shift+digit combos are intercepted in the Electron main process
+// (before-input-event, see src-electron/shortcuts.js) so they work no matter
+// what has focus, then arrive here via appBridge.onShortcut. Save/navigation
+// actions are handled directly; cart-specific ones (focusing a field inside
+// TransactionForm, opening its "add customer" dialog, removing its active
+// row) are relayed onward through a tiny event bus since that state lives in
+// a child component this layout doesn't otherwise reach into.
+function handleShortcut(actionId) {
+  if (!isTransactionsRoute.value) return;
+  switch (actionId) {
+    case 'save_quote':
+      saveTransaction('quote');
+      break;
+    case 'save_invoice':
+      saveTransaction('invoice');
+      break;
+    case 'save_purchase_order':
+      saveTransaction('purchase_order');
+      break;
+    case 'save_draft':
+      saveTransaction('draft');
+      break;
+    case 'new_transaction':
+      startNewFromMode();
+      break;
+    case 'open_recent':
+      openRecentTransactions();
+      break;
+    case 'focus_product_search':
+      emitUiEvent('focus-product-search');
+      break;
+    case 'focus_sku':
+      emitUiEvent('focus-sku');
+      break;
+    case 'add_customer':
+      emitUiEvent('add-customer');
+      break;
+    case 'remove_active_row':
+      emitUiEvent('remove-active-row');
+      break;
+    default:
+      break;
+  }
+}
+
+let unsubscribeShortcut = null;
+
+/**
+ * Enter saves the current transaction - but only when that's unambiguous:
+ * not while typing in a textarea (Notes, customer address), and not while
+ * any dialog or popup menu is open (the "New Customer" dialog, the product/
+ * customer dropdown, the post-save dialog) - those all have their own
+ * meaning for Enter, which must win.
+ */
+function onGlobalKeydown(e) {
+  if (e.key !== 'Enter') return;
+  if (!isTransactionsRoute.value) return;
+  const tag = e.target?.tagName?.toLowerCase();
+  if (tag === 'textarea') return;
+  if (document.querySelector('.q-dialog, .q-menu')) return;
+  if (!transactionsStore.draft.lineItems.length) return;
+  e.preventDefault();
+  saveTransaction(primaryActionType.value);
+}
+
 function onTemplateChange(val) {
   settingsStore.update({ print_template: val });
 }
@@ -500,11 +567,18 @@ onMounted(() => {
     const headerEl = headerRef.value?.$el || headerRef.value;
     if (headerEl) resizeObserver.observe(headerEl);
   }
+
+  if (window.appBridge?.onShortcut) {
+    unsubscribeShortcut = window.appBridge.onShortcut(handleShortcut);
+  }
+  window.addEventListener('keydown', onGlobalKeydown);
 });
 
 onBeforeUnmount(() => {
   stopDrag();
   if (resizeObserver) resizeObserver.disconnect();
+  if (unsubscribeShortcut) unsubscribeShortcut();
+  window.removeEventListener('keydown', onGlobalKeydown);
 });
 </script>
 

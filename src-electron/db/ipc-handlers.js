@@ -6,6 +6,7 @@ import { app, BrowserWindow, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { setShortcutMap } from '../shortcuts.js';
 
 /**
  * Returns a filename guaranteed not to collide with an existing file in
@@ -94,6 +95,16 @@ export function registerIpcHandlers(ipcMain, db) {
   });
 
   ipcMain.handle('app:getVersion', () => app.getVersion());
+
+  /**
+   * Called from SettingsPage.vue right after saving keyboard_shortcuts, so
+   * the before-input-event handler in electron-main.js starts using the
+   * new combos immediately - no app restart needed.
+   */
+  ipcMain.handle('app:updateShortcuts', (event, map) => {
+    setShortcutMap(map);
+    return { success: true };
+  });
 
   ipcMain.handle('app:getPrinters', async (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);

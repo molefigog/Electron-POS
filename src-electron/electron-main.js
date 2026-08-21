@@ -4,6 +4,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { initDb, getDb } from './db/connection.js';
 import { registerIpcHandlers } from './db/ipc-handlers.js';
+import { loadShortcutsFromDb, getShortcutMap, comboFromInput } from './shortcuts.js';
 
 // needed in case process is undefined under Linux
 const platform = process.platform || os.platform();
@@ -108,6 +109,7 @@ async function createWindow() {
   // Initialize SQLite (creates file + runs migrations) BEFORE the window loads,
   // and BEFORE any IPC handlers are registered, so the renderer never races the DB.
   await initDb();
+  loadShortcutsFromDb(getDb());
   registerIpcHandlers(ipcMain, getDb());
 
   mainWindow = new BrowserWindow({
@@ -122,6 +124,23 @@ async function createWindow() {
         path.join(process.env.QUASAR_ELECTRON_PRELOAD_FOLDER, 'electron-preload' + process.env.QUASAR_ELECTRON_PRELOAD_EXTENSION)
       ),
     },
+  });
+
+  // Intercepted here, before Chromium's default handling, so it works
+  // regardless of which element has focus (including inputs where a plain
+  // renderer keydown listener can get eaten by native behavior) and can't
+  // be blocked by a component that stops event propagation. Only digit keys
+  // combined with exactly one modifier ever match (see comboFromInput), so
+  // normal typing is never affected.
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    const combo = comboFromInput(input);
+    if (!combo) return;
+    const action = getShortcutMap()[combo];
+    if (action) {
+      event.preventDefault();
+      mainWindow.webContents.send('shortcut:trigger', action);
+    }
   });
 
   if (process.env.DEV) {

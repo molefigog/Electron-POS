@@ -13,6 +13,9 @@
         :label="`Delete Selected (${selectedRows.length})`" class="q-mr-sm" @click="deleteSelected" />
       <q-btn v-if="hasSelectedRows" flat color="primary" icon="download"
         :label="`Export Selected (${selectedRows.length})`" class="q-mr-sm" @click="exportSelectedCsv" />
+      <q-btn flat color="positive" icon="grid_on"
+        :label="hasSelectedRows ? `Export Selected to Excel (${selectedRows.length})` : 'Export All to Excel'"
+        class="q-mr-sm" @click="exportToExcel" />
       <q-btn flat color="primary" icon="upload_file" label="Import CSV" class="q-mr-sm" @click="showImport = true" />
       <q-btn color="primary" icon="add" label="New Product" @click="openForm(null)" />
     </div>
@@ -102,6 +105,7 @@ import { ref, reactive, computed, onMounted } from 'vue';
 import { useQuasar } from 'quasar';
 import { useProductsStore } from 'src/stores/products';
 import { BaseRepository } from 'src/services/repositories/BaseRepository';
+import * as XLSX from 'xlsx';
 
 const $q = useQuasar();
 const productsStore = useProductsStore();
@@ -266,6 +270,47 @@ function exportSelectedCsv() {
   URL.revokeObjectURL(url);
 
   $q.notify({ type: 'positive', message: `Exported ${selectedRows.value.length} product(s)` });
+}
+
+/**
+ * Excel export, per the requirement: exports the SELECTED rows if any are
+ * checked, otherwise exports ALL products currently loaded in the table
+ * (i.e. everything matching the current search filter). One button, same
+ * "selection wins if present" convention as the CSV export above.
+ */
+function buildExcelRows(rows) {
+  return rows.map((row) => ({
+    Name: row.name,
+    SKU: row.sku || '',
+    Barcode: row.barcode || '',
+    'Cost Price': row.cost_price,
+    'Selling Price': row.selling_price,
+    Stock: row.stock_qty,
+    'Reorder Level': row.reorder_level,
+    Category: row.category_name || '',
+  }));
+}
+
+function exportToExcel() {
+  const usingSelection = selectedRows.value.length > 0;
+  const rows = usingSelection ? selectedRows.value : productsStore.items;
+
+  if (!rows.length) {
+    $q.notify({ type: 'warning', message: 'No products to export' });
+    return;
+  }
+
+  const worksheet = XLSX.utils.json_to_sheet(buildExcelRows(rows));
+  worksheet['!cols'] = [{ wch: 28 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 18 }];
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Products');
+
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  const filename = `products-${usingSelection ? 'selected' : 'all'}-${stamp}.xlsx`;
+  XLSX.writeFile(workbook, filename);
+
+  $q.notify({ type: 'positive', message: `Exported ${rows.length} product(s) to ${filename}` });
 }
 
 function load() {

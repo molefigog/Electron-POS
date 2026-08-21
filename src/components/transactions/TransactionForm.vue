@@ -33,8 +33,9 @@
     <div class="transaction-form__products">
       <div class="row q-col-gutter-sm items-center">
         <div class="col-6">
-          <q-select v-model="productPick" :options="productOptions" label="Add product (search by name)" use-input
-            emit-value map-options @filter="filterProducts" @update:model-value="onPickProduct" />
+          <q-select ref="productSelectRef" v-model="productPick" :options="productOptions"
+            label="Add product (search by name)" use-input emit-value map-options @filter="filterProducts"
+            @update:model-value="onPickProduct" />
         </div>
         <div class="col-6">
           <q-input ref="skuInputRef" v-model="skuInput" label="SKU / Barcode (auto-adds on match)" dense filled>
@@ -48,6 +49,7 @@
       <q-markup-table flat bordered class="transaction-form__table">
         <thead>
           <tr>
+            <th style="width: 32px"></th>
             <th style="width: 28px"></th>
             <th class="text-left">Item</th>
             <th class="text-left">Qty</th>
@@ -63,6 +65,11 @@
           <tr v-for="(item, idx) in draft.lineItems" :key="idx"
             :class="{ 'row-active': idx === activeRowIndex, 'row-drag-over': idx === dragOverIndex }"
             @dragover.prevent="dragOverIndex = idx" @dragleave="dragOverIndex = null" @drop="onDrop(idx)">
+            <td class="text-center">
+              <q-checkbox :model-value="idx === activeRowIndex" dense @update:model-value="focusRow(idx)">
+                <q-tooltip>Select row (for keyboard shortcuts and Up/Down navigation)</q-tooltip>
+              </q-checkbox>
+            </td>
             <td>
               <q-icon name="drag_indicator" class="drag-handle" draggable="true" @dragstart="onDragStart(idx)"
                 @dragend="onDragEnd">
@@ -103,7 +110,7 @@
             <td><q-btn flat dense round icon="close" size="sm" @click="transactionsStore.removeLineItem(idx)" /></td>
           </tr>
           <tr v-if="!draft.lineItems.length">
-            <td colspan="9" class="text-center text-grey q-py-md">No items yet - search, scan, or type a SKU above</td>
+            <td colspan="10" class="text-center text-grey q-py-md">No items yet - search, scan, or type a SKU above</td>
           </tr>
         </tbody>
       </q-markup-table>
@@ -133,13 +140,14 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, nextTick, onMounted } from 'vue';
+import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import { useQuasar } from 'quasar';
 import { useTransactionsStore } from 'src/stores/transactions';
 import { useCustomersStore } from 'src/stores/customers';
 import { useProductsStore } from 'src/stores/products';
 import { useCurrency } from 'src/composables/useCurrency';
 import { useBarcodeScanner } from 'src/composables/useBarcodeScanner';
+import { onUiEvent } from 'src/composables/useUiEvents';
 
 const $q = useQuasar();
 const transactionsStore = useTransactionsStore();
@@ -150,6 +158,7 @@ const { format } = useCurrency();
 const draft = computed(() => transactionsStore.draft);
 const isPurchaseOrder = computed(() => draft.value.type === 'purchase_order');
 const productPick = ref(null);
+const productSelectRef = ref(null);
 const skuInput = ref('');
 const skuInputRef = ref(null);
 
@@ -283,7 +292,7 @@ function filterProducts(val, update) {
   update(() => {
     productOptions.value = productsStore.items
       .filter((p) => p.name.toLowerCase().includes((val || '').toLowerCase()) || p.sku?.includes(val || ''))
-      .map((p) => ({ label: `${p.name}  (${format(p.selling_price)})`, value: p.id, product: p }));
+      .map((p, i) => ({ label: `${i + 1}. ${p.name}  (${format(p.selling_price)})`, value: p.id, product: p }));
   });
 }
 
@@ -357,6 +366,33 @@ onMounted(async () => {
   if (!productsStore.items.length) await productsStore.fetchAll();
   filterCustomers('', (fn) => fn());
   filterProducts('', (fn) => fn());
+});
+
+// --- Cart shortcut relays -------------------------------------------------
+// MainLayout.vue owns the global Ctrl/Shift+digit dispatch (it's the only
+// place with access to appBridge.onShortcut across route changes) and
+// relays cart-specific actions here via a small window CustomEvent bus,
+// since this component owns the state those actions actually act on.
+const unsubscribers = [
+  onUiEvent('focus-product-search', () => {
+    nextTick(() => productSelectRef.value?.focus?.());
+  }),
+  onUiEvent('focus-sku', () => {
+    nextTick(() => skuInputRef.value?.focus?.());
+  }),
+  onUiEvent('add-customer', () => {
+    showNewCustomer.value = true;
+  }),
+  onUiEvent('remove-active-row', () => {
+    if (activeRowIndex.value >= 0 && activeRowIndex.value < draft.value.lineItems.length) {
+      transactionsStore.removeLineItem(activeRowIndex.value);
+      activeRowIndex.value = -1;
+    }
+  }),
+];
+
+onBeforeUnmount(() => {
+  unsubscribers.forEach((unsub) => unsub());
 });
 </script>
 

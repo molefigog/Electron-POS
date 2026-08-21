@@ -34,4 +34,11 @@ contextBridge.exposeInMainWorld('appBridge', {
   getPrinters: () => ipcRenderer.invoke('app:getPrinters'),
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
   updateBranding: (payload) => ipcRenderer.invoke('app:updateBranding', toPlain(payload)),
+  updateShortcuts: (map) => ipcRenderer.invoke('app:updateShortcuts', toPlain(map)),
+  /** callback(actionId) fires whenever a mapped Ctrl/Shift+digit combo is pressed anywhere in the window. Returns an unsubscribe function. */
+  onShortcut: (callback) => {
+    const listener = (_event, actionId) => callback(actionId);
+    ipcRenderer.on('shortcut:trigger', listener);
+    return () => ipcRenderer.removeListener('shortcut:trigger', listener);
+  },
 });
