@@ -190,6 +190,27 @@ function toMultilineHtml(text) {
   return escapeHtml(text).replace(/\r\n|\r|\n/g, '<br/>')
 }
 
+/** Optional signature block: two signature lines + a note, all editable from Settings */
+function renderSignatureBlock(company) {
+  if (String(company.show_signature_block) !== 'true') return ''
+
+  const leftLabel = company.signature_label_manager || 'Manager / Authorized Person'
+  const rightLabel = company.signature_label_customer || 'Customer / Client'
+  const note = company.signature_note || ''
+
+  return `
+    <div class="signature-block">
+      <div class="signature-line">
+        <div class="signature-box"></div>
+        <div class="signature-label">${escapeHtml(leftLabel)}</div>
+      </div>
+      <div class="signature-line">
+        <div class="signature-box"></div>
+        <div class="signature-label">${escapeHtml(rightLabel)}</div>
+      </div>
+    </div>
+    ${note ? `<div class="signature-note">${escapeHtml(note)}</div>` : ''}`
+}
 /**
  * Letterhead: logo/initials + centered company identity + a row of
  * detail chips (address / phone / email / VAT). Identical markup across
@@ -252,6 +273,7 @@ export function renderFooter(company, tx, symbol) {
             : '<div></div>'
         }
       </div>
+     ${renderSignatureBlock(company)}
       ${company.footer_note ? `<div class="footer-note">${company.footer_note}</div>` : ''}
     </div>`
 }
@@ -298,6 +320,11 @@ export const LETTERHEAD_FOOTER_CSS = `
 
   .label { font-family: "Courier New", monospace; font-size: calc(9px * var(--print-font-scale)); letter-spacing: .1em; text-transform: uppercase; color: var(--accent); font-weight: var(--print-font-weight-bold); }
   .page-indicator { display: inline-block; margin-top: 3px; font-family: "Courier New", monospace; font-size: calc(10px * var(--print-font-scale)); letter-spacing: .04em; color: var(--ink-soft); }
+  .signature-block { display: flex; justify-content: space-between; gap: 40px; margin-top: 24px; }
+  .signature-line { flex: 1; text-align: center; }
+  .signature-box { border-top: 1px solid var(--ink); margin: 28px 12px 6px; }
+  .signature-label { font-size: calc(10px * var(--print-font-scale)); color: var(--ink-soft); }
+  .signature-note { margin-top: 10px; font-size: calc(9.5px * var(--print-font-scale)); color: var(--ink-soft); text-align: center; font-style: italic; }
 `
 
 /** Kept for backwards compatibility with anything importing the old constant name */
