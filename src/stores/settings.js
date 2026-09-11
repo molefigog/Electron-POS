@@ -1,6 +1,6 @@
-import { defineStore } from 'pinia';
-import { Dark } from 'quasar';
-import SettingsRepository from 'src/services/repositories/SettingsRepository';
+import { defineStore } from 'pinia'
+import { Dark } from 'quasar'
+import SettingsRepository from 'src/services/repositories/SettingsRepository'
 
 const DEFAULT_SETTINGS = {
   company_name: 'My Company',
@@ -17,6 +17,10 @@ const DEFAULT_SETTINGS = {
   invoice_prefix: 'INV-',
   purchase_order_prefix: 'PO-',
   footer_note: 'Thank you for your business!',
+  show_signature_block: 'false',
+  signature_label_manager: 'Manager / Authorized Person',
+  signature_label_customer: 'Customer / Client',
+  signature_note: 'This serves as invoice claim',
   payment_details: '',
   mobile_money_details: '',
   default_tax_rate: '0',
@@ -26,26 +30,28 @@ const DEFAULT_SETTINGS = {
   silent_printing: 'false',
   theme_mode: 'system',
   keyboard_shortcuts: '{}',
-};
+}
 
 function resolveThemeMode(mode) {
-  if (mode === 'dark') return true;
-  if (mode === 'light') return false;
-  if (typeof window === 'undefined' || !window.matchMedia) return false;
-  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  if (mode === 'dark') return true
+  if (mode === 'light') return false
+  if (typeof window === 'undefined' || !window.matchMedia) return false
+  return window.matchMedia('(prefers-color-scheme: dark)').matches
 }
 
 function syncBranding(values) {
-  const companyName = String(values?.company_name || DEFAULT_SETTINGS.company_name).trim() || DEFAULT_SETTINGS.company_name;
+  const companyName =
+    String(values?.company_name || DEFAULT_SETTINGS.company_name).trim() ||
+    DEFAULT_SETTINGS.company_name
 
   if (typeof document !== 'undefined') {
-    document.title = companyName;
+    document.title = companyName
   }
 
   if (typeof window !== 'undefined' && window.appBridge?.updateBranding) {
     window.appBridge.updateBranding({ companyName }).catch(() => {
       // Best effort only: renderer branding still updates even if IPC fails.
-    });
+    })
   }
 }
 
@@ -57,33 +63,33 @@ export const useSettingsStore = defineStore('settings', {
 
   actions: {
     applyTheme(mode = this.values.theme_mode) {
-      Dark.set(resolveThemeMode(mode));
+      Dark.set(resolveThemeMode(mode))
     },
 
     async fetchAll() {
-      const saved = await SettingsRepository.all();
-      this.values = { ...DEFAULT_SETTINGS, ...saved };
-      this.applyTheme();
-      syncBranding(this.values);
-      this.loaded = true;
+      const saved = await SettingsRepository.all()
+      this.values = { ...DEFAULT_SETTINGS, ...saved }
+      this.applyTheme()
+      syncBranding(this.values)
+      this.loaded = true
     },
 
     async update(values) {
-      this.values = await SettingsRepository.update(values);
-      this.values = { ...DEFAULT_SETTINGS, ...this.values };
-      this.applyTheme();
-      syncBranding(this.values);
+      this.values = await SettingsRepository.update(values)
+      this.values = { ...DEFAULT_SETTINGS, ...this.values }
+      this.applyTheme()
+      syncBranding(this.values)
 
       if (values.keyboard_shortcuts !== undefined && window.appBridge?.updateShortcuts) {
         try {
-          const map = JSON.parse(this.values.keyboard_shortcuts || '{}');
-          await window.appBridge.updateShortcuts(map);
+          const map = JSON.parse(this.values.keyboard_shortcuts || '{}')
+          await window.appBridge.updateShortcuts(map)
         } catch {
           // Malformed JSON shouldn't block the rest of settings from saving.
         }
       }
 
-      return this.values;
+      return this.values
     },
   },
-});
+})

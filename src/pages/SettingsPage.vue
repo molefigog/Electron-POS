@@ -89,6 +89,21 @@
         <q-input v-model="form.mobile_money_details" label="Mobile Money Details" filled type="textarea" autogrow
           hint="e.g. M-Pesa: 12345, Ecocash: 67890" />
         <q-input v-model="form.footer_note" label="Footer Note" filled hint="e.g. Thank you for your business!" />
+        <q-toggle v-model="form.show_signature_block" label="Show signature block on printed documents" />
+        <template v-if="form.show_signature_block">
+          <div class="row q-col-gutter-sm">
+            <div class="col-6">
+              <q-input v-model="form.signature_label_manager" label="Left Signature Label" filled
+                hint="e.g. Manager / Authorized Person" />
+            </div>
+            <div class="col-6">
+              <q-input v-model="form.signature_label_customer" label="Right Signature Label" filled
+                hint="e.g. Customer / Client" />
+            </div>
+          </div>
+          <q-input v-model="form.signature_note" label="Signature Note" filled
+            hint="e.g. This serves as invoice claim" />
+        </template>
       </q-card-section>
     </q-card>
 
@@ -251,6 +266,10 @@ const form = reactive({
   invoice_prefix: 'INV-',
   purchase_order_prefix: 'PO-',
   footer_note: '',
+  show_signature_block: false,
+  signature_label_manager: 'Manager / Authorized Person',
+  signature_label_customer: 'Customer / Client',
+  signature_note: 'This serves as invoice claim',
   payment_details: '',
   mobile_money_details: '',
   default_tax_rate: 0,
@@ -382,6 +401,7 @@ async function save() {
       print_font_weight: String(form.print_font_weight),
       default_printer: form.default_printer || '',
       silent_printing: String(!!form.silent_printing),
+      show_signature_block: String(!!form.show_signature_block),
       keyboard_shortcuts: JSON.stringify(comboToAction),
     });
     setConnectionSettings({ mode: form.data_mode, apiUrl: form.api_url });
@@ -423,6 +443,7 @@ onMounted(async () => {
   form.print_font_size = Number(settingsStore.values.print_font_size || 12);
   form.print_font_weight = Number(settingsStore.values.print_font_weight || 400);
   form.silent_printing = String(settingsStore.values.silent_printing || 'false') === 'true';
+  form.show_signature_block = String(settingsStore.values.show_signature_block || 'false') === 'true';
   form.data_mode = connectionState.mode;
   form.api_url = connectionState.apiUrl;
 
