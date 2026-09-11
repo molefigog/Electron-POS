@@ -15,7 +15,7 @@
     </div>
 
     <q-table flat bordered :rows="transactionsStore.items" :columns="columns" row-key="id"
-      :loading="transactionsStore.loading">
+      :loading="transactionsStore.loading" :pagination="{ rowsPerPage: 14 }" :rows-per-page-options="[14]">
       <template #body-cell-type="props">
         <q-td :props="props">
           <q-badge :color="typeColor(props.value)">{{ typeLabel(props.value) }}</q-badge>
@@ -31,6 +31,9 @@
           <q-btn dense flat round icon="edit" @click="edit(props.row)" />
           <q-btn dense flat round icon="print" @click="printRow(props.row)" />
           <q-btn dense flat round icon="picture_as_pdf" @click="exportRow(props.row)" />
+          <q-btn dense flat round icon="email" @click="emailRow(props.row)">
+            <q-tooltip>Email document</q-tooltip>
+          </q-btn>
           <q-btn v-if="props.row.type === 'quote' && props.row.status !== 'converted'" dense flat round icon="sync_alt"
             color="primary" @click="convert(props.row)">
             <q-tooltip>Convert to Invoice</q-tooltip>
@@ -72,7 +75,7 @@ import { useCurrency } from 'src/composables/useCurrency';
 const emit = defineEmits(['edit']);
 const $q = useQuasar();
 const transactionsStore = useTransactionsStore();
-const { print, exportPdf } = usePrintDocument();
+const { print, exportPdf, emailPdf } = usePrintDocument();
 const { format } = useCurrency();
 
 const search = ref('');
@@ -157,6 +160,24 @@ async function exportRow(row) {
     }
   } catch (err) {
     $q.notify({ type: 'negative', message: err.message });
+  }
+}
+
+async function emailRow(row) {
+  try {
+    const full = await transactionsStore.fetchOne(row.id);
+    if (!full.customer_email) {
+      $q.notify({ type: 'warning', message: 'This customer has no email address' });
+      return;
+    }
+    const result = await emailPdf(full);
+    if (result.html) {
+      $q.notify({ type: 'positive', message: 'HTML email draft opened' });
+    } else {
+      $q.notify({ type: 'warning', message: 'Email draft opened in plain-text mode' });
+    }
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message || 'Could not prepare email' });
   }
 }
 

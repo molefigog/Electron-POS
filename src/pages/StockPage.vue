@@ -116,10 +116,12 @@
 // unchanged — same script block as before
 import { ref, reactive, computed, onMounted } from 'vue';
 import { useQuasar } from 'quasar';
+import { useRoute } from 'vue-router';
 import { useProductsStore } from 'src/stores/products';
 import { useStockStore } from 'src/stores/stock';
 
 const $q = useQuasar();
+const route = useRoute();
 const productsStore = useProductsStore();
 const stockStore = useStockStore();
 const selected = ref(null);
@@ -205,5 +207,15 @@ async function record() {
   }
 }
 
-onMounted(() => productsStore.fetchAll());
+onMounted(async () => {
+  await productsStore.fetchAll();
+  const productId = Number(route.query.productId);
+  if (!productId) return;
+
+  const product = productsStore.items.find((item) => item.id === productId);
+  if (product) {
+    search.value = product.name;
+    await select(product);
+  }
+});
 </script>

@@ -17,6 +17,7 @@ export function renderMinimal(tx, company) {
   const symbol = company.currency_symbol || 'M';
   const docLabel = tx.type === 'quote' ? 'QUOTATION' : tx.type === 'purchase_order' ? 'PURCHASE ORDER' : 'INVOICE';
   const partyLabel = tx.type === 'purchase_order' ? 'Supplier' : 'To';
+  const partyName = tx.type === 'purchase_order' ? tx.supplier_name : tx.customer_name;
   const pages = paginateTransactionItems(tx);
   const totalPages = pages.length;
 
@@ -44,7 +45,7 @@ export function renderMinimal(tx, company) {
           <span>${new Date(tx.issued_at || tx.created_at).toLocaleDateString()}</span>
         </div>
         <div class="bill-to">
-          ${partyLabel}: ${tx.customer_name || 'Walk-in Customer'}${tx.manual_reference ? `  |  Ref: ${tx.manual_reference}` : ''}${tx.reference_quotation_number ? `  |  Quote: ${tx.reference_quotation_number}` : ''}
+          ${partyLabel}: ${partyName || (tx.type === 'purchase_order' ? 'Supplier not selected' : 'Walk-in Customer')}${tx.manual_reference ? `  |  Ref: ${tx.manual_reference}` : ''}${tx.reference_quotation_number ? `  |  Quote: ${tx.reference_quotation_number}` : ''}
         </div>
         <div class="meta-extra">${renderPageIndicator(pageIndex + 1, totalPages)}</div>
         <div class="divider"></div>

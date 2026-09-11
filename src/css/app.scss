@@ -115,3 +115,56 @@ body.body--dark .q-field--filled .q-field__control {
 .q-dialog__inner > div {
   border: 1px solid var(--border-color);
 }
+
+.q-notifications {
+  z-index: 7000;
+}
+
+.q-notification {
+  min-width: 320px;
+  max-width: min(460px, calc(100vw - 28px));
+  padding: 12px 14px;
+  border: 1px solid #8b98a8;
+  border-radius: 3px;
+  box-shadow: 0 8px 22px rgba(25, 38, 58, 0.28);
+  color: #17202b !important;
+  background: #f5f7fa !important;
+  font-family: 'Segoe UI', sans-serif;
+  font-size: 13px;
+}
+
+.q-notification__message {
+  color: #17202b !important;
+  font-weight: 600;
+}
+
+.q-notification__caption {
+  color: #4b5868 !important;
+}
+
+.q-notification--standard .q-notification__icon {
+  color: #2563a6;
+}
+
+.q-notification.bg-positive,
+.q-notification.bg-negative,
+.q-notification.bg-warning,
+.q-notification.bg-info {
+  background: #f5f7fa !important;
+}
+
+.q-notification.bg-positive {
+  border-left: 4px solid #16803c;
+}
+
+.q-notification.bg-negative {
+  border-left: 4px solid #c42b2b;
+}
+
+.q-notification.bg-warning {
+  border-left: 4px solid #b26a00;
+}
+
+.q-notification.bg-info {
+  border-left: 4px solid #2563a6;
+}

@@ -18,6 +18,9 @@ export function renderClassic(tx, company) {
   const symbol = company.currency_symbol || 'M';
   const docLabel = tx.type === 'quote' ? 'QUOTATION' : tx.type === 'purchase_order' ? 'PURCHASE ORDER' : 'INVOICE';
   const partyLabel = tx.type === 'purchase_order' ? 'Supplier' : 'Bill To';
+  const partyName = tx.type === 'purchase_order' ? tx.supplier_name : tx.customer_name;
+  const partyAddress = tx.type === 'purchase_order' ? tx.supplier_address : tx.customer_address;
+  const partyPhone = tx.type === 'purchase_order' ? tx.supplier_phone : tx.customer_phone;
   const pages = paginateTransactionItems(tx);
   const totalPages = pages.length;
 
@@ -46,9 +49,9 @@ export function renderClassic(tx, company) {
         <div class="meta-row">
           <div class="meta-left">
             <strong>${partyLabel}:</strong><br>
-            ${tx.customer_name || 'Walk-in Customer'}
-            ${tx.customer_address ? `<br>${tx.customer_address}` : ''}
-            ${tx.customer_phone ? `<br>${tx.customer_phone}` : ''}
+            ${partyName || (tx.type === 'purchase_order' ? 'Supplier not selected' : 'Walk-in Customer')}
+            ${partyAddress ? `<br>${partyAddress}` : ''}
+            ${partyPhone ? `<br>${partyPhone}` : ''}
           </div>
           <div class="meta-right">
             <span class="doc-title">${docLabel}</span>

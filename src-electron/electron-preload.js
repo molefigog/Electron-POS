@@ -30,7 +30,10 @@ contextBridge.exposeInMainWorld('dbBridge', {
 
 contextBridge.exposeInMainWorld('appBridge', {
   printPdf: (options) => ipcRenderer.invoke('app:printPdf', toPlain(options)),
+  emailPdf: (options) => ipcRenderer.invoke('app:emailPdf', toPlain(options)),
   printHtml: (options) => ipcRenderer.invoke('app:printHtml', toPlain(options)),
+  openCalculator: () => ipcRenderer.invoke('app:openCalculator'),
+  openReceiptsFolder: () => ipcRenderer.invoke('app:openReceiptsFolder'),
   getPrinters: () => ipcRenderer.invoke('app:getPrinters'),
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
   updateBranding: (payload) => ipcRenderer.invoke('app:updateBranding', toPlain(payload)),

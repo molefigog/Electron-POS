@@ -145,6 +145,31 @@
     </q-card>
 
     <q-card flat bordered class="q-mb-md">
+      <q-card-section class="text-subtitle1">Data Connection</q-card-section>
+      <q-card-section class="q-gutter-md">
+        <q-option-group v-model="form.data_mode" type="radio" color="primary" :options="[
+          { label: 'Local SQLite (works offline)', value: 'local' },
+          { label: 'Hosted API (requires sign-in)', value: 'api' }
+        ]" />
+        <q-input v-model="form.api_url" label="API URL" filled placeholder="https://example.com" />
+        <div v-if="form.data_mode === 'api'" class="row q-col-gutter-sm items-end">
+          <div class="col-12 col-sm-5"><q-input v-model="apiEmail" label="Email" filled type="email" /></div>
+          <div class="col-12 col-sm-5"><q-input v-model="apiPassword" label="Password" filled type="password" /></div>
+          <div class="col-12 col-sm-2"><q-btn color="primary" icon="login" label="Sign in" :loading="authenticating"
+              class="full-width" @click="signIn" /></div>
+        </div>
+        <div class="row items-center q-gutter-sm">
+          <q-chip :color="connectionState.authenticated ? 'positive' : 'grey-6'" text-color="white" dense>
+            {{ connectionState.authenticated ? 'Signed in' : 'Not signed in' }}
+          </q-chip>
+          <q-btn v-if="connectionState.authenticated" flat no-caps label="Sign out" icon="logout" @click="signOut" />
+        </div>
+        <div class="text-caption text-grey">Changing this setting affects this device only. Use Sync in the toolbar to
+          upload offline changes.</div>
+      </q-card-section>
+    </q-card>
+
+    <q-card flat bordered class="q-mb-md">
       <q-card-section class="row items-center">
         <div class="text-subtitle1">Keyboard Shortcuts</div>
         <q-space />
@@ -185,6 +210,8 @@
 import { ref, reactive, computed, onMounted } from 'vue';
 import { useQuasar } from 'quasar';
 import { useSettingsStore } from 'src/stores/settings';
+import { apiClient } from 'src/services/api-client';
+import { clearSession, connectionState, setConnectionSettings } from 'src/services/connection';
 import TemplateSwitcher from 'src/components/print-templates/TemplateSwitcher.vue';
 import {
   SHORTCUT_ACTIONS, AVAILABLE_COMBOS, formatCombo, defaultShortcutMap, withDefaults, toActionComboMap,
@@ -196,6 +223,9 @@ const saving = ref(false);
 const logoFile = ref(null);
 const stampFile = ref(null);
 const loadingPrinters = ref(false);
+const authenticating = ref(false);
+const apiEmail = ref('');
+const apiPassword = ref('');
 const printerOptions = ref([]);
 const fontWeightOptions = [
   { label: 'Light (300)', value: 300 },
@@ -229,6 +259,8 @@ const form = reactive({
   default_printer: '',
   silent_printing: false,
   theme_mode: 'system',
+  data_mode: 'local',
+  api_url: '',
   shortcutsByAction: {}, // { [actionId]: combo } - UI-friendly shape; converted to combo->action JSON on save
 });
 
@@ -315,6 +347,11 @@ function removeStamp() {
 }
 
 async function save() {
+  if (form.data_mode === 'api' && !connectionState.authenticated) {
+    $q.notify({ type: 'warning', message: 'Sign in before selecting API mode' });
+    return;
+  }
+
   const comboToAction = {};
   const seenCombos = new Map();
   for (const action of SHORTCUT_ACTIONS) {
@@ -334,8 +371,12 @@ async function save() {
 
   saving.value = true;
   try {
+    const settingsValues = { ...form };
+    delete settingsValues.data_mode;
+    delete settingsValues.api_url;
+    delete settingsValues.shortcutsByAction;
     await settingsStore.update({
-      ...form,
+      ...settingsValues,
       default_tax_rate: String(form.default_tax_rate),
       print_font_size: String(form.print_font_size),
       print_font_weight: String(form.print_font_weight),
@@ -343,12 +384,36 @@ async function save() {
       silent_printing: String(!!form.silent_printing),
       keyboard_shortcuts: JSON.stringify(comboToAction),
     });
+    setConnectionSettings({ mode: form.data_mode, apiUrl: form.api_url });
     $q.notify({ type: 'positive', message: 'Settings saved' });
   } catch (err) {
     $q.notify({ type: 'negative', message: err.message });
   } finally {
     saving.value = false;
   }
+}
+
+async function signIn() {
+  authenticating.value = true;
+  try {
+    setConnectionSettings({ mode: 'api', apiUrl: form.api_url });
+    await apiClient.login(apiEmail.value, apiPassword.value);
+    form.data_mode = 'api';
+    setConnectionSettings({ mode: 'api', apiUrl: form.api_url });
+    $q.notify({ type: 'positive', message: 'Signed in to the hosted API' });
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message || 'Sign-in failed' });
+  } finally {
+    authenticating.value = false;
+    apiPassword.value = '';
+  }
+}
+
+function signOut() {
+  clearSession();
+  form.data_mode = 'local';
+  setConnectionSettings({ mode: 'local', apiUrl: form.api_url });
+  $q.notify({ type: 'info', message: 'Signed out of the hosted API' });
 }
 
 onMounted(async () => {
@@ -358,6 +423,8 @@ onMounted(async () => {
   form.print_font_size = Number(settingsStore.values.print_font_size || 12);
   form.print_font_weight = Number(settingsStore.values.print_font_weight || 400);
   form.silent_printing = String(settingsStore.values.silent_printing || 'false') === 'true';
+  form.data_mode = connectionState.mode;
+  form.api_url = connectionState.apiUrl;
 
   let savedMap = {};
   try {

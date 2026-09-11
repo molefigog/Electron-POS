@@ -5,6 +5,7 @@ import { useProductsStore } from './products';
 export const useStockStore = defineStore('stock', {
   state: () => ({
     history: [],
+    summary: null,
     loading: false,
   }),
 
@@ -16,6 +17,11 @@ export const useStockStore = defineStore('stock', {
       } finally {
         this.loading = false;
       }
+    },
+
+    async fetchSummary(filters = {}) {
+      this.summary = await StockRepository.summary(filters);
+      return this.summary;
     },
 
     /** type: 'in' | 'out' | 'adjustment' */

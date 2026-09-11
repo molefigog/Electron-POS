@@ -5,12 +5,25 @@
  * never know or care that the "backend" is Electron IPC + SQLite - swap
  * this layer for an HTTP client later and nothing above it changes.
  */
+import { apiClient } from '../api-client';
+import { isApiMode } from '../connection';
+
+const MUTATING_METHODS = new Set(['create', 'update', 'delete', 'record', 'convertQuoteToInvoice']);
+
+function newSyncId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export class BaseRepository {
   constructor(name) {
     this.name = name;
   }
 
   call(method, ...args) {
+    if (isApiMode()) {
+      return apiClient.call(this.name, method, args);
+    }
     if (!window.dbBridge) {
       throw new Error('dbBridge is not available. Are you running inside Electron?');
     }
@@ -21,6 +34,16 @@ export class BaseRepository {
     // since every payload we send is plain JSON-shaped (no Dates, functions,
     // Maps, etc.).
     const plainArgs = JSON.parse(JSON.stringify(args));
-    return window.dbBridge.call(this.name, method, plainArgs);
+    return window.dbBridge.call(this.name, method, plainArgs).then((result) => {
+      if (MUTATING_METHODS.has(method) && this.name !== 'settings' && this.name !== 'sync') {
+        return window.dbBridge.call('sync', 'enqueue', {
+          syncId: newSyncId(),
+          repository: this.name,
+          method,
+          args: plainArgs,
+        }).then(() => result);
+      }
+      return result;
+    });
   }
 }

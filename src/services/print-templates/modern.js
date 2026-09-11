@@ -18,6 +18,8 @@ export function renderModern(tx, company) {
   const symbol = company.currency_symbol || 'M';
   const docLabel = tx.type === 'quote' ? 'Quotation' : tx.type === 'purchase_order' ? 'Purchase Order' : 'Invoice';
   const partyLabel = tx.type === 'purchase_order' ? 'Supplier' : 'Bill To';
+  const partyName = tx.type === 'purchase_order' ? tx.supplier_name : tx.customer_name;
+  const partyPhone = tx.type === 'purchase_order' ? tx.supplier_phone : tx.customer_phone;
   const pages = paginateTransactionItems(tx);
   const totalPages = pages.length;
 
@@ -59,8 +61,8 @@ export function renderModern(tx, company) {
       <div class="content page-content">
 
         <div class="bill-to">
-          <strong>${partyLabel}:</strong> ${tx.customer_name || 'Walk-in Customer'}
-          ${tx.customer_phone ? `<br>${tx.customer_phone}` : ''}
+          <strong>${partyLabel}:</strong> ${partyName || (tx.type === 'purchase_order' ? 'Supplier not selected' : 'Walk-in Customer')}
+          ${partyPhone ? `<br>${partyPhone}` : ''}
         </div>
 
         <table class="main-table">

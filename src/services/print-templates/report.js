@@ -39,7 +39,7 @@ export function renderReportDocument(report, company, style = 'classic') {
         <tr>
           <td>${valueOrDash(row.number)}</td>
           <td>${valueOrDash(row.type)}</td>
-          <td>${valueOrDash(row.customer_name || 'Walk-in')}</td>
+          <td>${valueOrDash(row.type === 'purchase_order' ? row.supplier_name : (row.customer_name || 'Walk-in'))}</td>
           <td class="num">${money(row.grand_total, symbol)}</td>
           <td>${valueOrDash(row.status)}</td>
           <td>${dateLabel}</td>

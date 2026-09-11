@@ -17,6 +17,18 @@
 
         <q-space />
 
+        <q-btn flat dense round icon="calculate" @click="openCalculator">
+          <q-tooltip>Open Calculator</q-tooltip>
+        </q-btn>
+
+        <q-btn flat dense round icon="folder_open" @click="openReceiptsFolder">
+          <q-tooltip>Open saved PDFs</q-tooltip>
+        </q-btn>
+
+        <q-btn flat dense round icon="sync" :loading="syncing" @click="runSync">
+          <q-tooltip>Sync offline changes</q-tooltip>
+        </q-btn>
+
         <q-btn flat dense round icon="settings" class="win-toolbar-settings" to="/settings">
           <q-tooltip>Settings</q-tooltip>
         </q-btn>
@@ -38,14 +50,23 @@
 
     <q-page-container class="desktop-container">
       <div ref="workspaceRef" class="desktop-workspace" :style="workspaceStyle">
-        <section ref="windowRef" class="desktop-window" :class="{ 'desktop-window--dragging': isDragging }"
-          :style="windowStyle" :data-window-mode="windowMode">
+        <button v-if="desktopStore.minimized" class="desktop-taskbar-button" type="button" @click="restoreWindow">
+          <q-icon :name="activeNavItem?.icon || 'apps'" size="16px" />
+          <span>{{ activeWindowTitle }}</span>
+          <q-icon name="keyboard_arrow_up" size="16px" />
+        </button>
+
+        <section v-show="!desktopStore.minimized" ref="windowRef" class="desktop-window"
+          :class="{ 'desktop-window--dragging': isDragging }" :style="windowStyle" :data-window-mode="windowMode">
           <header class="desktop-window__titlebar" @pointerdown="startDrag">
             <div class="desktop-window__title">
               <q-icon :name="activeNavItem?.icon || 'apps'" size="16px" />
               <span>{{ activeWindowTitle }}</span>
             </div>
             <div class="desktop-window__controls">
+              <q-btn flat dense round size="sm" icon="remove" @click.stop="minimizeWindow">
+                <q-tooltip>Minimize</q-tooltip>
+              </q-btn>
               <q-btn flat dense round size="sm" icon="first_page" @click.stop="snapLeft">
                 <q-tooltip>Snap left</q-tooltip>
               </q-btn>
@@ -135,33 +156,37 @@ import { useQuasar } from 'quasar';
 import { useRoute } from 'vue-router';
 import { useTransactionsStore } from 'src/stores/transactions';
 import { useSettingsStore } from 'src/stores/settings';
+import { useDesktopStore } from 'src/stores/desktop';
 import { useCurrency } from 'src/composables/useCurrency';
 import { usePrintDocument } from 'src/composables/usePrintDocument';
 import { emitUiEvent } from 'src/composables/useUiEvents';
 import TemplateSwitcher from 'src/components/print-templates/TemplateSwitcher.vue';
 import TransactionList from 'src/components/transactions/TransactionList.vue';
+import { syncPendingChanges } from 'src/services/sync';
 
 const route = useRoute();
 const $q = useQuasar();
 const transactionsStore = useTransactionsStore();
 const settingsStore = useSettingsStore();
+const desktopStore = useDesktopStore();
 const { format } = useCurrency();
 const { print, exportPdf } = usePrintDocument();
+const syncing = ref(false);
 
 const workspaceRef = ref(null);
 const windowRef = ref(null);
 const headerRef = ref(null);
 const isDragging = ref(false);
 const hasPositioned = ref(false);
-const windowMode = ref('floating');
+const windowMode = computed(() => desktopStore.mode);
 const savingTransaction = ref(false);
 const showRecentTransactions = ref(false);
 const showPostSaveDialog = ref(false);
 const lastSavedTransaction = ref(null);
 const headerHeight = ref(102);
 
-const windowPosition = reactive({ x: 30, y: 24 });
-const floatingPosition = reactive({ x: 30, y: 24 });
+const windowPosition = computed(() => desktopStore.position);
+const floatingPosition = computed(() => desktopStore.floatingPosition);
 const dragState = reactive({
   pointerId: null,
   startX: 0,
@@ -178,6 +203,7 @@ const navItems = [
   { route: '/letters', label: 'Letters', icon: 'description' },
   { route: '/products', label: 'Products', icon: 'inventory_2' },
   { route: '/customers', label: 'Customers', icon: 'people' },
+  { route: '/suppliers', label: 'Suppliers', icon: 'local_shipping' },
   { route: '/stock', label: 'Stock', icon: 'warehouse' },
   { route: '/reports', label: 'Reports', icon: 'bar_chart' },
   { route: '/help', label: 'Help', icon: 'help_outline' },
@@ -244,7 +270,7 @@ const windowStyle = computed(() => {
   return {
     width: 'min(1280px, calc(100% - 24px))',
     height: 'calc(100% - 24px)',
-    transform: `translate3d(${windowPosition.x}px, ${windowPosition.y}px, 0)`,
+    transform: `translate3d(${windowPosition.value.x}px, ${windowPosition.value.y}px, 0)`,
   };
 });
 
@@ -256,6 +282,35 @@ function isActive(path) {
 function summaryAmount(amount) {
   if (transactionsStore.draft.type === 'purchase_order' && !transactionsStore.draftHasPricedItems) return '-';
   return format(amount);
+}
+
+async function runSync() {
+  syncing.value = true;
+  try {
+    const result = await syncPendingChanges();
+    const conflictMessage = result.conflicts.length ? ` ${result.conflicts.length} conflict(s) need review.` : '';
+    $q.notify({ type: result.conflicts.length ? 'warning' : 'positive', message: `Sync complete: ${result.uploaded} uploaded, ${result.downloaded} downloaded.${conflictMessage}` });
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message || 'Sync failed' });
+  } finally {
+    syncing.value = false;
+  }
+}
+
+async function openCalculator() {
+  try {
+    await window.appBridge?.openCalculator?.();
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message || 'Could not open Calculator' });
+  }
+}
+
+async function openReceiptsFolder() {
+  try {
+    await window.appBridge?.openReceiptsFolder?.();
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message || 'Could not open saved PDFs folder' });
+  }
 }
 
 function startNewFromMode() {
@@ -418,9 +473,8 @@ function clampPosition(x, y) {
 
 function constrainWindow() {
   if (windowMode.value !== 'floating') return;
-  const bounded = clampPosition(windowPosition.x, windowPosition.y);
-  windowPosition.x = bounded.x;
-  windowPosition.y = bounded.y;
+  const bounded = clampPosition(windowPosition.value.x, windowPosition.value.y);
+  desktopStore.setPosition(bounded.x, bounded.y);
 }
 
 function centerWindow() {
@@ -435,21 +489,16 @@ function centerWindow() {
   const centeredX = (workspaceEl.clientWidth - windowEl.offsetWidth) / 2;
   const centeredY = Math.max(14, (workspaceEl.clientHeight - windowEl.offsetHeight) / 2);
   const bounded = clampPosition(centeredX, centeredY);
-  windowPosition.x = bounded.x;
-  windowPosition.y = bounded.y;
-  floatingPosition.x = bounded.x;
-  floatingPosition.y = bounded.y;
+  desktopStore.setPosition(bounded.x, bounded.y);
 }
 
 function saveFloatingPosition() {
-  floatingPosition.x = windowPosition.x;
-  floatingPosition.y = windowPosition.y;
+  desktopStore.setFloatingPosition(windowPosition.value.x, windowPosition.value.y);
 }
 
 function restoreFloating() {
-  windowMode.value = 'floating';
-  windowPosition.x = floatingPosition.x;
-  windowPosition.y = floatingPosition.y;
+  desktopStore.setMode('floating');
+  desktopStore.setPosition(floatingPosition.value.x, floatingPosition.value.y);
   nextTick(() => {
     constrainWindow();
     saveFloatingPosition();
@@ -465,7 +514,7 @@ function setWindowMode(mode) {
   if (windowMode.value === 'floating') {
     saveFloatingPosition();
   }
-  windowMode.value = mode;
+  desktopStore.setMode(mode);
 }
 
 function snapLeft() {
@@ -484,15 +533,22 @@ function toggleMaximize() {
   setWindowMode('maximized');
 }
 
+function minimizeWindow() {
+  saveFloatingPosition();
+  desktopStore.minimize();
+}
+
+function restoreWindow() {
+  desktopStore.restore();
+  nextTick(() => constrainWindow());
+}
+
 function onDragMove(event) {
   if (!isDragging.value || event.pointerId !== dragState.pointerId) return;
   const deltaX = event.clientX - dragState.startX;
   const deltaY = event.clientY - dragState.startY;
   const next = clampPosition(dragState.originX + deltaX, dragState.originY + deltaY);
-  windowPosition.x = next.x;
-  windowPosition.y = next.y;
-  floatingPosition.x = next.x;
-  floatingPosition.y = next.y;
+  desktopStore.setPosition(next.x, next.y);
 }
 
 function stopDrag(event) {
@@ -514,8 +570,8 @@ function startDrag(event) {
   dragState.pointerId = event.pointerId;
   dragState.startX = event.clientX;
   dragState.startY = event.clientY;
-  dragState.originX = windowPosition.x;
-  dragState.originY = windowPosition.y;
+  dragState.originX = windowPosition.value.x;
+  dragState.originY = windowPosition.value.y;
   isDragging.value = true;
 
   window.addEventListener('pointermove', onDragMove);
@@ -543,7 +599,7 @@ watch(isTransactionsRoute, () => {
 onMounted(() => {
   nextTick(() => {
     updateHeaderHeight();
-    centerWindow();
+    if (!desktopStore.minimized) constrainWindow();
     hasPositioned.value = true;
   });
 
@@ -557,7 +613,7 @@ onMounted(() => {
         return;
       }
 
-      if (windowMode.value === 'floating') {
+      if (!desktopStore.minimized && windowMode.value === 'floating') {
         constrainWindow();
       }
     });
@@ -699,6 +755,31 @@ onBeforeUnmount(() => {
     radial-gradient(circle at 14% 18%, color-mix(in srgb, var(--desk-accent) 22%, transparent) 0%, transparent 45%),
     radial-gradient(circle at 86% 12%, color-mix(in srgb, var(--desk-accent-2) 20%, transparent) 0%, transparent 40%),
     linear-gradient(145deg, var(--desk-bg-1), var(--desk-bg-2) 42%, var(--desk-bg-3));
+}
+
+.desktop-taskbar-button {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 180px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: 4px;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  box-shadow: 0 6px 16px rgba(48, 74, 112, 0.2);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.desktop-taskbar-button:hover {
+  background: var(--surface-hover);
 }
 
 .desktop-window {

@@ -1,12 +1,17 @@
 import {
   ProductRepository, CategoryRepository, TaxRepository,
-  CustomerRepository, StockRepository, TransactionRepository, SettingsRepository,
+  CustomerRepository, SupplierRepository, StockRepository, TransactionRepository, SettingsRepository,
 } from './repositories.js';
+import { SyncRepository } from './sync-repository.js';
 import { app, BrowserWindow, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { setShortcutMap } from '../shortcuts.js';
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Returns a filename guaranteed not to collide with an existing file in
@@ -30,6 +35,10 @@ function writeTempHtml(html) {
   return { dir, filePath };
 }
 
+function getReceiptsDirectory() {
+  return path.join(os.homedir(), 'Documents', 'receipts');
+}
+
 async function waitForDocumentAssets(win) {
   try {
     await win.webContents.executeJavaScript(`
@@ -49,6 +58,43 @@ async function waitForDocumentAssets(win) {
   }
 }
 
+async function createPdfFile(html, defaultFileName) {
+  const dateFolder = new Date().toLocaleDateString('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric',
+  }).replace(/ /g, '-');
+  const receiptsDir = path.join(getReceiptsDirectory(), dateFolder);
+  fs.mkdirSync(receiptsDir, { recursive: true });
+  const filename = defaultFileName || 'document.pdf';
+  const baseName = path.parse(filename).name;
+  const ext = path.extname(filename) || '.pdf';
+  const fullPath = path.join(receiptsDir, getAvailableFilename(receiptsDir, baseName, ext));
+  const printWin = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
+  let tempHtml = null;
+  try {
+    tempHtml = writeTempHtml(html);
+    await printWin.loadFile(tempHtml.filePath);
+    await waitForDocumentAssets(printWin);
+    const pdfBuffer = await printWin.webContents.printToPDF({ pageSize: 'A4', printBackground: true });
+    fs.writeFileSync(fullPath, pdfBuffer);
+  } finally {
+    printWin.close();
+    if (tempHtml) fs.rmSync(tempHtml.dir, { recursive: true, force: true });
+  }
+  return fullPath;
+}
+
+function encodePowerShellValue(value) {
+  return Buffer.from(String(value || ''), 'utf8').toString('base64');
+}
+
+async function openOutlookDraft({ to, subject, body, htmlBody }) {
+  const decode = (value) => `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodePowerShellValue(value)}'))`;
+  const script = `$to=${decode(to)};$subject=${decode(subject)};$body=${decode(body)};$htmlBody=${decode(htmlBody)};` +
+    '$outlook=New-Object -ComObject Outlook.Application;$mail=$outlook.CreateItem(0);' +
+    '$mail.To=$to;$mail.Subject=$subject;$mail.Body=$body;$mail.HTMLBody=$htmlBody;$mail.Display();';
+  await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true });
+}
+
 
 export function registerIpcHandlers(ipcMain, db) {
   const repos = {
@@ -56,9 +102,11 @@ export function registerIpcHandlers(ipcMain, db) {
     categories: new CategoryRepository(db),
     taxes: new TaxRepository(db),
     customers: new CustomerRepository(db),
+    suppliers: new SupplierRepository(db),
     stock: new StockRepository(db),
     transactions: new TransactionRepository(db),
     settings: new SettingsRepository(db),
+    sync: new SyncRepository(db),
   };
 
   // Allow-list of which methods may be invoked from the renderer, per repo.
@@ -68,9 +116,11 @@ export function registerIpcHandlers(ipcMain, db) {
     categories: ['all', 'create', 'delete'],
     taxes: ['all', 'create', 'delete'],
     customers: ['all', 'find', 'create', 'update', 'delete'],
-    stock: ['history', 'record'],
+    suppliers: ['all', 'find', 'create', 'update', 'delete'],
+    stock: ['history', 'summary', 'record'],
     transactions: ['all', 'find', 'create', 'update', 'delete', 'convertQuoteToInvoice'],
     settings: ['all', 'update'],
+    sync: ['pending', 'getCursor', 'enqueue', 'acknowledge'],
   };
 
   ipcMain.handle('db:call', async (event, { repository, method, args }) => {
@@ -95,6 +145,28 @@ export function registerIpcHandlers(ipcMain, db) {
   });
 
   ipcMain.handle('app:getVersion', () => app.getVersion());
+
+  ipcMain.handle('app:openCalculator', () => {
+    if (process.platform === 'win32') {
+      spawn('calc.exe', [], { detached: true, stdio: 'ignore' }).unref();
+      return { success: true };
+    }
+
+    const command = process.platform === 'darwin' ? 'open' : 'gnome-calculator';
+    spawn(command, process.platform === 'darwin' ? ['-a', 'Calculator'] : [], {
+      detached: true,
+      stdio: 'ignore',
+    }).unref();
+    return { success: true };
+  });
+
+  ipcMain.handle('app:openReceiptsFolder', async () => {
+    const receiptsDir = getReceiptsDirectory();
+    fs.mkdirSync(receiptsDir, { recursive: true });
+    const openError = await shell.openPath(receiptsDir);
+    if (openError) throw new Error(openError);
+    return { success: true, filePath: receiptsDir };
+  });
 
   /**
    * Called from SettingsPage.vue right after saving keyboard_shortcuts, so
@@ -160,38 +232,7 @@ export function registerIpcHandlers(ipcMain, db) {
    * a numeric suffix is appended automatically if that name is already taken.
    */
   ipcMain.handle('app:printPdf', async (event, { html, defaultFileName }) => {
-    // Build a "21-Aug-2026" style folder name from today's date
-    const dateFolder = new Date().toLocaleDateString('en-GB', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-    }).replace(/ /g, '-'); // "21 Aug 2026" -> "21-Aug-2026"
-
-    const receiptsDir = path.join(os.homedir(), 'Documents', 'receipts', dateFolder);
-    if (!fs.existsSync(receiptsDir)) {
-      fs.mkdirSync(receiptsDir, { recursive: true });
-    }
-
-    const filename = defaultFileName || 'document.pdf';
-    const baseName = path.parse(filename).name;
-    const ext = path.extname(filename) || '.pdf';
-    const safeFilename = getAvailableFilename(receiptsDir, baseName, ext);
-    const fullPath = path.join(receiptsDir, safeFilename);
-
-    const printWin = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
-    let tempHtml = null;
-    try {
-      tempHtml = writeTempHtml(html);
-      await printWin.loadFile(tempHtml.filePath);
-      await waitForDocumentAssets(printWin);
-      const pdfBuffer = await printWin.webContents.printToPDF({ pageSize: 'A4', printBackground: true });
-      fs.writeFileSync(fullPath, pdfBuffer);
-    } finally {
-      printWin.close();
-      if (tempHtml) {
-        fs.rmSync(tempHtml.dir, { recursive: true, force: true });
-      }
-    }
+    const fullPath = await createPdfFile(html, defaultFileName);
 
     const openError = await shell.openPath(fullPath);
     return {
@@ -199,5 +240,17 @@ export function registerIpcHandlers(ipcMain, db) {
       opened: !openError,
       openError: openError || null,
     };
+  });
+
+  ipcMain.handle('app:emailPdf', async (event, { to, subject, body, htmlBody }) => {
+    if (!body && !htmlBody) throw new Error('No email content provided');
+    try {
+      await openOutlookDraft({ to, subject, body, htmlBody });
+      return { html: true };
+    } catch {
+      const mailto = `mailto:${encodeURIComponent(to || '')}?subject=${encodeURIComponent(subject || '')}&body=${encodeURIComponent(body || '')}`;
+      await shell.openExternal(mailto);
+      return { html: false };
+    }
   });
 }

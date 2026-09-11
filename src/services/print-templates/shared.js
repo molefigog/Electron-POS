@@ -1,7 +1,7 @@
 export function money(amount, symbol = 'M') {
-  if (amount === null || amount === undefined || amount === '') return '-';
-  const n = Number(amount || 0);
-  return `${symbol}${n.toFixed(2)}`;
+  if (amount === null || amount === undefined || amount === '') return '-'
+  const n = Number(amount || 0)
+  return `${symbol}${n.toFixed(2)}`
 }
 
 export function itemsRows(tx, symbol) {
@@ -15,9 +15,9 @@ export function itemsRows(tx, symbol) {
         <td class="num">${item.unit_price === null || item.unit_price === undefined || item.unit_price === '' ? '-' : item.discount_pct ? item.discount_pct + '%' : '-'}</td>
         <td class="num">${item.unit_price === null || item.unit_price === undefined || item.unit_price === '' ? '-' : item.tax_rate ? item.tax_rate + '%' : '-'}</td>
         <td class="num">${money(item.line_total, symbol)}</td>
-      </tr>`
+      </tr>`,
     )
-    .join('');
+    .join('')
 }
 
 /**
@@ -26,27 +26,45 @@ export function itemsRows(tx, symbol) {
  * here and every element that reads var(--accent) shifts together.
  */
 const PALETTES = {
-  classic: { accent: '#22ac87', ink: '#1c2230', inkSoft: '#5a6272', line: '#dde1e8', wash: '#f6f7fa' },
-  modern: { accent: '#4338ca', ink: '#1c2230', inkSoft: '#5a6272', line: '#e4e4f5', wash: '#f5f5fc' },
-  minimal: { accent: '#0090b4', ink: '#111111', inkSoft: '#444444', line: '#000000', wash: '#f2f2f2' },
-};
+  classic: {
+    accent: '#22ac87',
+    ink: '#1c2230',
+    inkSoft: '#5a6272',
+    line: '#dde1e8',
+    wash: '#f6f7fa',
+  },
+  modern: {
+    accent: '#4338ca',
+    ink: '#1c2230',
+    inkSoft: '#5a6272',
+    line: '#e4e4f5',
+    wash: '#f5f5fc',
+  },
+  minimal: {
+    accent: '#0090b4',
+    ink: '#111111',
+    inkSoft: '#444444',
+    line: '#000000',
+    wash: '#f2f2f2',
+  },
+}
 
 export function paletteFor(style) {
-  return PALETTES[style] || PALETTES.classic;
+  return PALETTES[style] || PALETTES.classic
 }
 
 function clampNumber(value, min, max, fallback) {
-  if (!Number.isFinite(value)) return fallback;
-  return Math.min(max, Math.max(min, value));
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(max, Math.max(min, value))
 }
 
 function resolvePrintTypography(company = {}) {
-  const baseFontSize = clampNumber(Number(company.print_font_size), 8, 24, 12);
-  const baseWeight = clampNumber(Number(company.print_font_weight), 300, 900, 400);
-  const weight = Math.round(baseWeight / 100) * 100;
-  const mediumWeight = Math.min(900, weight + 100);
-  const semiboldWeight = Math.min(900, weight + 200);
-  const boldWeight = Math.min(900, weight + 300);
+  const baseFontSize = clampNumber(Number(company.print_font_size), 8, 24, 12)
+  const baseWeight = clampNumber(Number(company.print_font_weight), 300, 900, 400)
+  const weight = Math.round(baseWeight / 100) * 100
+  const mediumWeight = Math.min(900, weight + 100)
+  const semiboldWeight = Math.min(900, weight + 200)
+  const boldWeight = Math.min(900, weight + 300)
   return {
     baseFontSize,
     fontScale: Number((baseFontSize / 12).toFixed(4)),
@@ -54,7 +72,7 @@ function resolvePrintTypography(company = {}) {
     mediumWeight,
     semiboldWeight,
     boldWeight,
-  };
+  }
 }
 
 /**
@@ -64,8 +82,8 @@ function resolvePrintTypography(company = {}) {
  * everything that must stay identical regardless of which layout is picked.
  */
 export function baseShellCss(style, company = {}) {
-  const p = paletteFor(style);
-  const t = resolvePrintTypography(company);
+  const p = paletteFor(style)
+  const t = resolvePrintTypography(company)
   return `
     :root {
       --ink: ${p.ink};
@@ -114,48 +132,50 @@ export function baseShellCss(style, company = {}) {
       }
       .sheet:last-child { break-after: auto; page-break-after: auto; }
     }
-  `;
+  `
 }
 
-export const ITEMS_PER_PAGE = 22;
+export const ITEMS_PER_PAGE = 18
 
 export function paginateTransactionItems(tx, itemsPerPage = ITEMS_PER_PAGE) {
-  const allItems = Array.isArray(tx?.items) ? tx.items : [];
+  const allItems = Array.isArray(tx?.items) ? tx.items : []
   if (!allItems.length) {
-    return [{ ...tx, items: [] }];
+    return [{ ...tx, items: [] }]
   }
 
-  const pages = [];
+  const pages = []
   for (let index = 0; index < allItems.length; index += itemsPerPage) {
     pages.push({
       ...tx,
       items: allItems.slice(index, index + itemsPerPage),
-    });
+    })
   }
 
-  return pages;
+  return pages
 }
 
 /** Uploaded logo image if Settings has one, otherwise initials fallback */
 function logoBlock(company) {
   if (company.company_logo) {
-    return `<img class="brand-logo-img" src="${company.company_logo}" alt="${company.company_name || 'Logo'}" />`;
+    return `<img class="brand-logo-img" src="${company.company_logo}" alt="${company.company_name || 'Logo'}" />`
   }
   const initials = String(company.company_name || 'LG')
     .split(' ')
     .map((w) => w[0])
     .join('')
     .slice(0, 2)
-    .toUpperCase();
-  return `<div class="brand-logo-fallback">${initials}</div>`;
+    .toUpperCase()
+  return `<div class="brand-logo-fallback">${initials}</div>`
 }
 
 const ICONS = {
-  address: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18"/><line x1="9" y1="7" x2="9" y2="7.01"/><line x1="15" y1="7" x2="15" y2="7.01"/><line x1="9" y1="11" x2="9" y2="11.01"/><line x1="15" y1="11" x2="15" y2="11.01"/></svg>',
-  phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 8a3 3 0 0 1 3 3M15 4a7 7 0 0 1 7 7"/><path d="M4.5 3h3l1.5 5-2 1.5a11 11 0 0 0 6 6L14.5 14l5 1.5v3a2 2 0 0 1-2.2 2A17 17 0 0 1 2.5 5.2 2 2 0 0 1 4.5 3z"/></svg>',
+  address:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18"/><line x1="9" y1="7" x2="9" y2="7.01"/><line x1="15" y1="7" x2="15" y2="7.01"/><line x1="9" y1="11" x2="9" y2="11.01"/><line x1="15" y1="11" x2="15" y2="11.01"/></svg>',
+  phone:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 8a3 3 0 0 1 3 3M15 4a7 7 0 0 1 7 7"/><path d="M4.5 3h3l1.5 5-2 1.5a11 11 0 0 0 6 6L14.5 14l5 1.5v3a2 2 0 0 1-2.2 2A17 17 0 0 1 2.5 5.2 2 2 0 0 1 4.5 3z"/></svg>',
   mail: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m2 6 10 7 10-7"/></svg>',
   vat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h9l3 3v17H6z"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="9" y1="12" x2="15" y2="12"/></svg>',
-};
+}
 
 function escapeHtml(text) {
   return String(text || '')
@@ -163,11 +183,11 @@ function escapeHtml(text) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+    .replace(/'/g, '&#39;')
 }
 
 function toMultilineHtml(text) {
-  return escapeHtml(text).replace(/\r\n|\r|\n/g, '<br/>');
+  return escapeHtml(text).replace(/\r\n|\r|\n/g, '<br/>')
 }
 
 /**
@@ -178,13 +198,14 @@ function toMultilineHtml(text) {
  */
 export function renderLetterhead(company) {
   const details = [
-    company.company_address && `<span class="detail detail-address">${ICONS.address}<span>${toMultilineHtml(company.company_address)}</span></span>`,
+    company.company_address &&
+      `<span class="detail detail-address">${ICONS.address}<span>${toMultilineHtml(company.company_address)}</span></span>`,
     company.company_phone && `<span class="detail">${ICONS.phone}${company.company_phone}</span>`,
     company.company_email && `<span class="detail">${ICONS.mail}${company.company_email}</span>`,
     company.company_vat && `<span class="detail">${ICONS.vat}VAT: ${company.company_vat}</span>`,
   ]
     .filter(Boolean)
-    .join('');
+    .join('')
 
   return `
     <div class="letterhead">
@@ -193,7 +214,7 @@ export function renderLetterhead(company) {
         <div class="company-name">${company.company_name || ''}</div>
         ${details ? `<div class="company-details">${details}</div>` : ''}
       </div>
-    </div>`;
+    </div>`
 }
 
 /**
@@ -203,15 +224,15 @@ export function renderLetterhead(company) {
  * nothing about payment is scattered elsewhere in the document.
  */
 export function renderFooter(company, tx, symbol) {
-  const hasTotals = tx.grand_total !== null && tx.grand_total !== undefined && tx.grand_total !== '';
-  const grand = money(tx.grand_total, symbol);
-  const isPurchaseOrder = tx.type === 'purchase_order';
-  const showPaymentDetails = !isPurchaseOrder;
+  const hasTotals = tx.grand_total !== null && tx.grand_total !== undefined && tx.grand_total !== ''
+  const grand = money(tx.grand_total, symbol)
+  const isPurchaseOrder = tx.type === 'purchase_order'
+  const showPaymentDetails = !isPurchaseOrder
   const totalUnits = Array.isArray(tx.items)
     ? tx.items.reduce((sum, item) => sum + (Number(item?.quantity) || 0), 0)
-    : 0;
-  const hasQuantitySummary = tx.type === 'purchase_order';
-  const hasRightSummary = hasTotals || hasQuantitySummary;
+    : 0
+  const hasQuantitySummary = tx.type === 'purchase_order'
+  const hasRightSummary = hasTotals || hasQuantitySummary
 
   return `
     <div class="footer">
@@ -219,16 +240,20 @@ export function renderFooter(company, tx, symbol) {
       <div class="footer-content${showPaymentDetails ? '' : ' footer-content--compact'}">
         ${showPaymentDetails && company.payment_details ? `<div class="payment-block">${company.payment_details.replace(/\n/g, '<br/>')}</div>` : '<div></div>'}
         ${showPaymentDetails && company.mobile_money_details ? `<div class="merchants-block">${company.mobile_money_details.replace(/\n/g, '<br/>')}</div>` : '<div></div>'}
-        ${hasRightSummary ? `<div class="totals-block">
+        ${
+          hasRightSummary
+            ? `<div class="totals-block">
           ${hasQuantitySummary ? `<div class="totals-row"><span class="label">Total Units</span><span class="value">${totalUnits}</span></div>` : ''}
           ${hasTotals ? `<div class="totals-row"><span class="label">Subtotal </span> &nbsp;<span class="value">${money(tx.subtotal, symbol)}</span></div>` : ''}
           ${hasTotals && tx.discount_total ? `<div class="totals-row"><span class="label">Discount</span><span class="value">-${money(tx.discount_total, symbol)}</span></div>` : ''}
           ${hasTotals ? `<div class="totals-row"><span class="label">Tax </span> &nbsp;<span class="value">${money(tx.tax_total, symbol)}</span></div>` : ''}
           ${hasTotals ? `<div class="totals-row grand"><span class="label">Total </span><span class="value">${grand}</span></div>` : ''}
-        </div>` : '<div></div>'}
+        </div>`
+            : '<div></div>'
+        }
       </div>
       ${company.footer_note ? `<div class="footer-note">${company.footer_note}</div>` : ''}
-    </div>`;
+    </div>`
 }
 
 /**
@@ -237,7 +262,7 @@ export function renderFooter(company, tx, symbol) {
  * height before print/export.
  */
 export function renderPageIndicator(page = 1, total = 1) {
-  return `<span class="page-indicator">Page ${page}/${total}</span>`;
+  return `<span class="page-indicator">Page ${page}/${total}</span>`
 }
 
 /** Shared CSS for letterhead + footer blocks (reads the --accent/--ink/etc vars set by baseShellCss) */
@@ -273,7 +298,7 @@ export const LETTERHEAD_FOOTER_CSS = `
 
   .label { font-family: "Courier New", monospace; font-size: calc(9px * var(--print-font-scale)); letter-spacing: .1em; text-transform: uppercase; color: var(--accent); font-weight: var(--print-font-weight-bold); }
   .page-indicator { display: inline-block; margin-top: 3px; font-family: "Courier New", monospace; font-size: calc(10px * var(--print-font-scale)); letter-spacing: .04em; color: var(--ink-soft); }
-`;
+`
 
 /** Kept for backwards compatibility with anything importing the old constant name */
-export const A4_PAGE_CSS = '';
+export const A4_PAGE_CSS = ''

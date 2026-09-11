@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { app } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
-import { runMigrations } from './migrations.js';
+import { runMigrations } from '../../migrations.js';
 
 let db;
 

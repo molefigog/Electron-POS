@@ -316,6 +316,55 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 12,
+    name: 'add_local_sync_metadata',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS sync_queue (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sync_id TEXT NOT NULL UNIQUE,
+          repository TEXT NOT NULL,
+          method TEXT NOT NULL,
+          args TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','synced','conflict')),
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          synced_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_queue_status ON sync_queue(status, id);
+        CREATE TABLE IF NOT EXISTS sync_state (
+          key TEXT PRIMARY KEY,
+          value TEXT
+        );
+        INSERT OR IGNORE INTO sync_state (key, value) VALUES ('cursor', '');
+      `);
+    },
+  },
+  {
+    version: 13,
+    name: 'add_suppliers_and_purchase_order_supplier',
+    up: (db) => {
+      const transactionColumns = new Set(db.prepare(`PRAGMA table_info(transactions)`).all().map((c) => c.name));
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS suppliers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          phone TEXT,
+          email TEXT,
+          address TEXT,
+          tax_number TEXT,
+          payment_terms TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_suppliers_name ON suppliers(name);
+      `);
+      if (!transactionColumns.has('supplier_id')) {
+        db.exec(`ALTER TABLE transactions ADD COLUMN supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL`);
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_transactions_supplier ON transactions(supplier_id)`);
+    },
+  },
 ];
 
 export function runMigrations(db) {

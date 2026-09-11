@@ -125,11 +125,88 @@ export class CustomerRepository {
   delete(id) { this.db.prepare(`DELETE FROM customers WHERE id = ?`).run(id); return { id }; }
 }
 
+export class SupplierRepository {
+  constructor(db) { this.db = db; }
+
+  all({ search = '' } = {}) {
+    let sql = `SELECT * FROM suppliers`;
+    const params = [];
+    if (search) {
+      sql += ` WHERE name LIKE ? OR phone LIKE ? OR email LIKE ?`;
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    }
+    sql += ` ORDER BY name ASC`;
+    return this.db.prepare(sql).all(...params);
+  }
+
+  find(id) { return this.db.prepare(`SELECT * FROM suppliers WHERE id = ?`).get(id); }
+
+  create(data) {
+    const info = this.db.prepare(`
+      INSERT INTO suppliers (name, phone, email, address, tax_number, payment_terms)
+      VALUES (@name, @phone, @email, @address, @tax_number, @payment_terms)
+    `).run({ phone: null, email: null, address: null, tax_number: null, payment_terms: null, ...data });
+    return this.find(info.lastInsertRowid);
+  }
+
+  update(id, data) {
+    this.db.prepare(`
+      UPDATE suppliers SET name=@name, phone=@phone, email=@email, address=@address,
+      tax_number=@tax_number, payment_terms=@payment_terms, updated_at=CURRENT_TIMESTAMP WHERE id=@id
+    `).run({ id, ...data });
+    return this.find(id);
+  }
+
+  delete(id) { this.db.prepare(`DELETE FROM suppliers WHERE id = ?`).run(id); return { id }; }
+}
+
 export class StockRepository {
   constructor(db) { this.db = db; }
 
   history(productId) {
     return this.db.prepare(`SELECT * FROM stock_movements WHERE product_id = ? ORDER BY created_at DESC`).all(productId);
+  }
+
+  summary({ from, to } = {}) {
+    const products = this.db.prepare(`
+      SELECT id, stock_qty, cost_price, selling_price
+      FROM products
+      WHERE is_active = 1
+    `).all();
+    const movements = this.db.prepare(`
+      SELECT product_id, type, quantity
+      FROM stock_movements
+      WHERE created_at >= ? AND created_at <= ?
+    `).all(from, to || new Date().toISOString());
+    const byProduct = new Map();
+    for (const movement of movements) {
+      const quantity = Number(movement.quantity) || 0;
+      const delta = movement.type === 'out' ? -quantity : quantity;
+      const current = byProduct.get(movement.product_id) || { delta: 0, in: 0, out: 0 };
+      current.delta += delta;
+      if (movement.type === 'in') current.in += quantity;
+      if (movement.type === 'out') current.out += quantity;
+      byProduct.set(movement.product_id, current);
+    }
+
+    return products.reduce((summary, product) => {
+      const movement = byProduct.get(product.id) || { delta: 0, in: 0, out: 0 };
+      const closingQty = Number(product.stock_qty) || 0;
+      const openingQty = closingQty - movement.delta;
+      const cost = Number(product.cost_price) || 0;
+      const retail = Number(product.selling_price) || 0;
+      summary.openingQty += openingQty;
+      summary.closingQty += closingQty;
+      summary.stockInQty += movement.in;
+      summary.stockOutQty += movement.out;
+      summary.openingCostValue += openingQty * cost;
+      summary.closingCostValue += closingQty * cost;
+      summary.closingRetailValue += closingQty * retail;
+      return summary;
+    }, {
+      openingQty: 0, closingQty: 0, stockInQty: 0, stockOutQty: 0,
+      openingCostValue: 0, closingCostValue: 0, closingRetailValue: 0,
+    });
   }
 
   /**
@@ -196,9 +273,10 @@ export class TransactionRepository {
 
   all({ search = '', type = null, status = null } = {}) {
     let sql = `
-      SELECT tx.*, c.name as customer_name
+      SELECT tx.*, c.name as customer_name, s.name as supplier_name
       FROM transactions tx
       LEFT JOIN customers c ON c.id = tx.customer_id
+      LEFT JOIN suppliers s ON s.id = tx.supplier_id
       WHERE 1=1`;
     const params = [];
     if (search) {
@@ -213,8 +291,11 @@ export class TransactionRepository {
 
   find(id) {
     const tx = this.db.prepare(`
-      SELECT tx.*, c.name as customer_name, c.email as customer_email, c.phone as customer_phone, c.address as customer_address
-      FROM transactions tx LEFT JOIN customers c ON c.id = tx.customer_id
+      SELECT tx.*, c.name as customer_name, c.email as customer_email, c.phone as customer_phone, c.address as customer_address,
+        s.name as supplier_name, s.email as supplier_email, s.phone as supplier_phone, s.address as supplier_address
+      FROM transactions tx
+      LEFT JOIN customers c ON c.id = tx.customer_id
+      LEFT JOIN suppliers s ON s.id = tx.supplier_id
       WHERE tx.id = ?
     `).get(id);
     if (!tx) return null;
@@ -274,7 +355,7 @@ export class TransactionRepository {
    * `status` defaults to match type ('draft' stays a draft regardless of type
    * until explicitly finalized).
    */
-  create({ type, status, customerId, items, discountTotal = 0, notes = '', issuedAt = null, manualReference = null }) {
+  create({ type, status, customerId, supplierId = null, items, discountTotal = 0, notes = '', issuedAt = null, manualReference = null }) {
     const run = this.db.transaction(() => {
       const number = this._nextNumber(type);
       const resolvedStatus = status || type;
@@ -284,16 +365,17 @@ export class TransactionRepository {
 
       const info = this.db.prepare(`
         INSERT INTO transactions (
-          number, type, status, customer_id, subtotal, discount_total, tax_total, grand_total, notes, issued_at, manual_reference
+          number, type, status, customer_id, supplier_id, subtotal, discount_total, tax_total, grand_total, notes, issued_at, manual_reference
         )
         VALUES (
-          @number, @type, @status, @customerId, @subtotal, @discountTotal, @taxTotal, @grandTotal, @notes, @issuedAt, @manualReference
+          @number, @type, @status, @customerId, @supplierId, @subtotal, @discountTotal, @taxTotal, @grandTotal, @notes, @issuedAt, @manualReference
         )
       `).run({
         number,
         type,
         status: resolvedStatus,
         customerId,
+        supplierId: type === 'purchase_order' ? supplierId : null,
         subtotal,
         discountTotal,
         taxTotal,
@@ -352,7 +434,7 @@ export class TransactionRepository {
     return run();
   }
 
-  update(id, { type, customerId, items, discountTotal = 0, notes = '', status, issuedAt = null, manualReference = null }) {
+  update(id, { type, customerId, supplierId = null, items, discountTotal = 0, notes = '', status, issuedAt = null, manualReference = null }) {
     const run = this.db.transaction(() => {
       const current = this.find(id);
       if (!current) throw new Error('Transaction not found');
@@ -364,7 +446,7 @@ export class TransactionRepository {
 
       this.db.prepare(`
         UPDATE transactions SET
-        type=@type, customer_id=@customerId, subtotal=@subtotal, discount_total=@discountTotal,
+        type=@type, customer_id=@customerId, supplier_id=@supplierId, subtotal=@subtotal, discount_total=@discountTotal,
         tax_total=@taxTotal, grand_total=@grandTotal, notes=@notes, status=COALESCE(@status, status),
         issued_at=COALESCE(@issuedAt, issued_at), manual_reference=@manualReference,
         updated_at = CURRENT_TIMESTAMP WHERE id=@id
@@ -372,6 +454,7 @@ export class TransactionRepository {
         id,
         type: resolvedType,
         customerId,
+        supplierId: resolvedType === 'purchase_order' ? supplierId : null,
         subtotal,
         discountTotal,
         taxTotal,
@@ -460,7 +543,7 @@ export class TransactionRepository {
       `);
       const stockRepo = new StockRepository(this.db);
       for (const item of quote.items) {
-        itemStmt.run({ transaction_id: invoiceId, ...item });
+        itemStmt.run({ ...item, transaction_id: invoiceId });
         if (item.product_id) {
           stockRepo.record({
             productId: item.product_id,

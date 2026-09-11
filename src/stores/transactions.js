@@ -20,6 +20,7 @@ function emptyDraft() {
     type: 'quote', // 'quote' | 'invoice' | 'purchase_order'
     status: 'draft',
     customerId: null,
+    supplierId: null,
     referenceQuotationNumber: null,
     manualReference: '', // optional, user-entered (PO number, customer ref, etc.) - independent of referenceQuotationNumber
     issuedAt: todayISODate(), // defaults to today; user can pick another date before saving
@@ -105,6 +106,7 @@ export const useTransactionsStore = defineStore('transactions', {
         type: tx.type,
         status: tx.status,
         customerId: tx.customer_id,
+        supplierId: tx.supplier_id,
         referenceQuotationNumber: tx.reference_quotation_number,
         manualReference: tx.manual_reference || '',
         issuedAt: String(tx.issued_at || tx.created_at).slice(0, 10),
@@ -175,6 +177,7 @@ export const useTransactionsStore = defineStore('transactions', {
         type,
         status,
         customerId: this.draft.customerId,
+        supplierId: this.draft.supplierId,
         notes: this.draft.notes,
         discountTotal: this.draft.discountTotal || 0,
         items: this.draft.lineItems,

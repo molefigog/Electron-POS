@@ -18,6 +18,15 @@
           </q-btn>
         </div>
       </div>
+      <div class="col-4" v-if="isPurchaseOrder">
+        <div class="row q-col-gutter-xs items-start no-wrap">
+          <q-select v-model="draft.supplierId" :options="supplierOptions" emit-value map-options use-input
+            label="Supplier" clearable class="col" @filter="filterSuppliers" />
+          <q-btn round dense color="primary" icon="add" class="q-mt-sm" @click="showNewSupplier = true">
+            <q-tooltip>Add new supplier</q-tooltip>
+          </q-btn>
+        </div>
+      </div>
       <div class="col-4">
         <q-input v-model="draft.issuedAt" type="date" label="Date" filled hint="Defaults to today if left unchanged" />
       </div>
@@ -136,6 +145,24 @@
         </q-card-actions>
       </q-card>
     </q-dialog>
+
+    <q-dialog v-model="showNewSupplier">
+      <q-card style="min-width: 400px">
+        <q-card-section class="text-h6">New Supplier</q-card-section>
+        <q-card-section class="q-gutter-sm">
+          <q-input v-model="newSupplier.name" label="Name *" filled autofocus />
+          <q-input v-model="newSupplier.phone" label="Phone" filled />
+          <q-input v-model="newSupplier.email" label="Email" filled />
+          <q-input v-model="newSupplier.address" label="Address" filled type="textarea" autogrow />
+          <q-input v-model="newSupplier.tax_number" label="Tax Number" filled />
+          <q-input v-model="newSupplier.payment_terms" label="Payment Terms" filled hint="e.g. Cash, 30 days" />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="Cancel" v-close-popup />
+          <q-btn color="primary" label="Save & Select" :loading="savingSupplier" @click="saveNewSupplier" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </section>
 </template>
 
@@ -144,6 +171,7 @@ import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } 
 import { useQuasar } from 'quasar';
 import { useTransactionsStore } from 'src/stores/transactions';
 import { useCustomersStore } from 'src/stores/customers';
+import { useSuppliersStore } from 'src/stores/suppliers';
 import { useProductsStore } from 'src/stores/products';
 import { useCurrency } from 'src/composables/useCurrency';
 import { useBarcodeScanner } from 'src/composables/useBarcodeScanner';
@@ -152,6 +180,7 @@ import { onUiEvent } from 'src/composables/useUiEvents';
 const $q = useQuasar();
 const transactionsStore = useTransactionsStore();
 const customersStore = useCustomersStore();
+const suppliersStore = useSuppliersStore();
 const productsStore = useProductsStore();
 const { format } = useCurrency();
 
@@ -163,6 +192,7 @@ const skuInput = ref('');
 const skuInputRef = ref(null);
 
 const customerOptions = ref([]);
+const supplierOptions = ref([]);
 const productOptions = ref([]);
 
 function docTypeLabel(type) {
@@ -175,6 +205,15 @@ function docTypeLabel(type) {
 
 function startFresh() {
   transactionsStore.startNewDraft(draft.value.type || 'quote');
+}
+
+function filterSuppliers(value, update) {
+  update(() => {
+    const needle = String(value || '').toLowerCase();
+    supplierOptions.value = suppliersStore.items
+      .filter((supplier) => supplier.name.toLowerCase().includes(needle))
+      .map((supplier) => ({ label: supplier.name, value: supplier.id }));
+  });
 }
 
 // --- Keyboard row navigation -------------------------------------------------
@@ -340,6 +379,13 @@ function emptyNewCustomer() {
 }
 const newCustomer = reactive(emptyNewCustomer());
 
+const showNewSupplier = ref(false);
+const savingSupplier = ref(false);
+function emptyNewSupplier() {
+  return { name: '', phone: '', email: '', address: '', tax_number: '', payment_terms: '' };
+}
+const newSupplier = reactive(emptyNewSupplier());
+
 async function saveNewCustomer() {
   if (!newCustomer.name) {
     $q.notify({ type: 'warning', message: 'Name is required' });
@@ -361,10 +407,32 @@ async function saveNewCustomer() {
   }
 }
 
+async function saveNewSupplier() {
+  if (!newSupplier.name.trim()) {
+    $q.notify({ type: 'warning', message: 'Name is required' });
+    return;
+  }
+  savingSupplier.value = true;
+  try {
+    const created = await suppliersStore.create({ ...newSupplier });
+    supplierOptions.value = [{ label: created.name, value: created.id }, ...supplierOptions.value];
+    draft.value.supplierId = created.id;
+    Object.assign(newSupplier, emptyNewSupplier());
+    showNewSupplier.value = false;
+    $q.notify({ type: 'positive', message: `${created.name} added and selected` });
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message });
+  } finally {
+    savingSupplier.value = false;
+  }
+}
+
 onMounted(async () => {
   if (!customersStore.items.length) await customersStore.fetchAll();
+  if (!suppliersStore.items.length) await suppliersStore.fetchAll();
   if (!productsStore.items.length) await productsStore.fetchAll();
   filterCustomers('', (fn) => fn());
+  filterSuppliers('', (fn) => fn());
   filterProducts('', (fn) => fn());
 });
 

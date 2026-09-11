@@ -9,6 +9,7 @@ const routes = [
       { path: 'letters', name: 'letters', component: () => import('pages/LetterPage.vue') },
       { path: 'products', name: 'products', component: () => import('pages/ProductsPage.vue') },
       { path: 'customers', name: 'customers', component: () => import('pages/CustomersPage.vue') },
+      { path: 'suppliers', name: 'suppliers', component: () => import('pages/SuppliersPage.vue') },
       { path: 'stock', name: 'stock', component: () => import('pages/StockPage.vue') },
       { path: 'reports', name: 'reports', component: () => import('pages/ReportsPage.vue') },
       { path: 'help', name: 'help', component: () => import('pages/HelpPage.vue') },
