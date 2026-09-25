@@ -1,12 +1,13 @@
 import {
   money,
   paginateTransactionItems,
+  ITEMS_PER_PAGE,
   baseShellCss,
   renderLetterhead,
   renderFooter,
   renderPageIndicator,
   LETTERHEAD_FOOTER_CSS,
-} from './shared';
+} from './shared'
 
 /**
  * Minimal layout: monospace, black-and-white ledger feel. Same shared
@@ -14,12 +15,14 @@ import {
  * line + item table) is styled differently.
  */
 export function renderMinimal(tx, company) {
-  const symbol = company.currency_symbol || 'M';
-  const docLabel = tx.type === 'quote' ? 'QUOTATION' : tx.type === 'purchase_order' ? 'PURCHASE ORDER' : 'INVOICE';
-  const partyLabel = tx.type === 'purchase_order' ? 'Supplier' : 'To';
-  const partyName = tx.type === 'purchase_order' ? tx.supplier_name : tx.customer_name;
-  const pages = paginateTransactionItems(tx);
-  const totalPages = pages.length;
+  const symbol = company.currency_symbol || 'M'
+  const docLabel =
+    tx.type === 'quote' ? 'QUOTATION' : tx.type === 'purchase_order' ? 'PURCHASE ORDER' : 'INVOICE'
+  const partyLabel = tx.type === 'purchase_order' ? 'Supplier' : 'To'
+  const partyName = tx.type === 'purchase_order' ? tx.supplier_name : tx.customer_name
+  // const pages = paginateTransactionItems(tx);
+  const pages = paginateTransactionItems(tx, Number(company.items_per_page) || ITEMS_PER_PAGE)
+  const totalPages = pages.length
 
   const contentStyles = `
     body { font-family: "Courier New", monospace; }
@@ -32,10 +35,11 @@ export function renderMinimal(tx, company) {
     table.main-table { width: 100%; border-collapse: collapse; font-size: calc(11px * var(--print-font-scale)); }
     .main-table th { text-align: left; padding: 5px 4px; font-weight: var(--print-font-weight); border-bottom: 1px solid var(--ink); text-transform: uppercase; font-size: calc(9.5px * var(--print-font-scale)); }
     .main-table td { padding: 5px 4px; }
-  `;
+  `
 
   const sheets = pages
-    .map((pageTx, pageIndex) => `
+    .map(
+      (pageTx, pageIndex) => `
     <div class="sheet">
       <div class="page-header">
         ${renderLetterhead(company)}
@@ -65,8 +69,9 @@ export function renderMinimal(tx, company) {
         ${renderFooter(company, tx, symbol)}
       </div>
     </div>
-  `)
-    .join('');
+  `,
+    )
+    .join('')
 
   return `
   <html><head><meta charset="utf-8"><style>
@@ -75,5 +80,5 @@ export function renderMinimal(tx, company) {
     ${contentStyles}
   </style></head><body>
     ${sheets}
-  </body></html>`;
+  </body></html>`
 }

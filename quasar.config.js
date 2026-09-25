@@ -11,7 +11,7 @@ export default defineConfig((/* ctx */) => {
     // app boot file (/src/boot)
     // --> boot files are part of "main.js"
     // https://v2.quasar.dev/quasar-cli-vite/boot-files
-    boot: ['pinia', 'electron',],
+    boot: ['pinia', 'electron'],
 
     // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#css
     css: ['app.scss'],
@@ -208,7 +208,6 @@ export default defineConfig((/* ctx */) => {
         // https://www.electron.build/configuration/configuration
         appId: 'erp-system',
         productName: 'New Interior Decorators (PTY) LTD',
-        publish: 'never',
         directories: {
           output: 'dist/electron',
         },
@@ -231,7 +230,6 @@ export default defineConfig((/* ctx */) => {
         },
       },
     },
-
 
     // Full list of options: https://v2.quasar.dev/quasar-cli-vite/developing-browser-extensions/configuring-bex
     bex: {

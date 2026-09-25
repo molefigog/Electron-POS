@@ -110,10 +110,19 @@
     <q-card flat bordered class="q-mb-md">
       <q-card-section class="text-subtitle1">Default Print Template</q-card-section>
       <q-card-section>
-        <TemplateSwitcher v-model="form.print_template" />
         <div class="text-caption text-grey q-mt-sm">
           Applies to new prints and PDF exports. You can still switch templates per-document from the Transactions
           screen.
+        </div>
+        <div class="row q-col-gutter-sm">
+          <div class="col-6">
+            <TemplateSwitcher v-model="form.print_template" />
+          </div>
+          <div class="col-6">
+            <q-input v-model.number="form.items_per_page" type="number" label="Items Per Page" filled min="1" max="100"
+              hint="How many line items fit on one printed sheet before it splits to a new page" />
+          </div>
+
         </div>
       </q-card-section>
     </q-card>
@@ -262,6 +271,7 @@ const form = reactive({
   company_stamp: '',
   currency_symbol: 'M',
   print_template: 'classic',
+  items_per_page: 18,
   quote_prefix: 'QUO-',
   invoice_prefix: 'INV-',
   purchase_order_prefix: 'PO-',
@@ -399,6 +409,7 @@ async function save() {
       default_tax_rate: String(form.default_tax_rate),
       print_font_size: String(form.print_font_size),
       print_font_weight: String(form.print_font_weight),
+      items_per_page: String(form.items_per_page),
       default_printer: form.default_printer || '',
       silent_printing: String(!!form.silent_printing),
       show_signature_block: String(!!form.show_signature_block),
@@ -442,6 +453,7 @@ onMounted(async () => {
   form.default_tax_rate = Number(settingsStore.values.default_tax_rate || 0);
   form.print_font_size = Number(settingsStore.values.print_font_size || 12);
   form.print_font_weight = Number(settingsStore.values.print_font_weight || 400);
+  form.items_per_page = Number(settingsStore.values.items_per_page || 18);
   form.silent_printing = String(settingsStore.values.silent_printing || 'false') === 'true';
   form.show_signature_block = String(settingsStore.values.show_signature_block || 'false') === 'true';
   form.data_mode = connectionState.mode;

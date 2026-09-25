@@ -1,12 +1,13 @@
 import {
   itemsRows,
   paginateTransactionItems,
+  ITEMS_PER_PAGE,
   baseShellCss,
   renderLetterhead,
   renderFooter,
   renderPageIndicator,
   LETTERHEAD_FOOTER_CSS,
-} from './shared';
+} from './shared'
 
 /**
  * Every template exports the same signature: (tx, company) => htmlString.
@@ -15,14 +16,16 @@ import {
  * template rendered the document.
  */
 export function renderClassic(tx, company) {
-  const symbol = company.currency_symbol || 'M';
-  const docLabel = tx.type === 'quote' ? 'QUOTATION' : tx.type === 'purchase_order' ? 'PURCHASE ORDER' : 'INVOICE';
-  const partyLabel = tx.type === 'purchase_order' ? 'Supplier' : 'Bill To';
-  const partyName = tx.type === 'purchase_order' ? tx.supplier_name : tx.customer_name;
-  const partyAddress = tx.type === 'purchase_order' ? tx.supplier_address : tx.customer_address;
-  const partyPhone = tx.type === 'purchase_order' ? tx.supplier_phone : tx.customer_phone;
-  const pages = paginateTransactionItems(tx);
-  const totalPages = pages.length;
+  const symbol = company.currency_symbol || 'M'
+  const docLabel =
+    tx.type === 'quote' ? 'QUOTATION' : tx.type === 'purchase_order' ? 'PURCHASE ORDER' : 'INVOICE'
+  const partyLabel = tx.type === 'purchase_order' ? 'Supplier' : 'Bill To'
+  const partyName = tx.type === 'purchase_order' ? tx.supplier_name : tx.customer_name
+  const partyAddress = tx.type === 'purchase_order' ? tx.supplier_address : tx.customer_address
+  const partyPhone = tx.type === 'purchase_order' ? tx.supplier_phone : tx.customer_phone
+  // const pages = paginateTransactionItems(tx);
+  const pages = paginateTransactionItems(tx, Number(company.items_per_page) || ITEMS_PER_PAGE)
+  const totalPages = pages.length
 
   const contentStyles = `
     .meta-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 18px; }
@@ -38,10 +41,11 @@ export function renderClassic(tx, company) {
     .main-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
     .main-table tbody tr:nth-child(even) { background: var(--wash); }
     .notes { margin-top: 16px; font-size: calc(11px * var(--print-font-scale)); color: var(--ink-soft); }
-  `;
+  `
 
   const sheets = pages
-    .map((pageTx, pageIndex) => `
+    .map(
+      (pageTx, pageIndex) => `
     <div class="sheet">
       <div class="page-header">
         ${renderLetterhead(company)}
@@ -78,8 +82,9 @@ export function renderClassic(tx, company) {
         ${renderFooter(company, tx, symbol)}
       </div>
     </div>
-  `)
-    .join('');
+  `,
+    )
+    .join('')
 
   return `
   <html><head><meta charset="utf-8"><style>
@@ -88,5 +93,5 @@ export function renderClassic(tx, company) {
     ${contentStyles}
   </style></head><body>
     ${sheets}
-  </body></html>`;
+  </body></html>`
 }

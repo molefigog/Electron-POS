@@ -1,12 +1,13 @@
 import {
   itemsRows,
   paginateTransactionItems,
+  ITEMS_PER_PAGE,
   baseShellCss,
   renderLetterhead,
   renderFooter,
   renderPageIndicator,
   LETTERHEAD_FOOTER_CSS,
-} from './shared';
+} from './shared'
 
 /**
  * Modern layout: same shared letterhead + footer as every other template,
@@ -15,13 +16,15 @@ import {
  * duplicated in the body.
  */
 export function renderModern(tx, company) {
-  const symbol = company.currency_symbol || 'M';
-  const docLabel = tx.type === 'quote' ? 'Quotation' : tx.type === 'purchase_order' ? 'Purchase Order' : 'Invoice';
-  const partyLabel = tx.type === 'purchase_order' ? 'Supplier' : 'Bill To';
-  const partyName = tx.type === 'purchase_order' ? tx.supplier_name : tx.customer_name;
-  const partyPhone = tx.type === 'purchase_order' ? tx.supplier_phone : tx.customer_phone;
-  const pages = paginateTransactionItems(tx);
-  const totalPages = pages.length;
+  const symbol = company.currency_symbol || 'M'
+  const docLabel =
+    tx.type === 'quote' ? 'Quotation' : tx.type === 'purchase_order' ? 'Purchase Order' : 'Invoice'
+  const partyLabel = tx.type === 'purchase_order' ? 'Supplier' : 'Bill To'
+  const partyName = tx.type === 'purchase_order' ? tx.supplier_name : tx.customer_name
+  const partyPhone = tx.type === 'purchase_order' ? tx.supplier_phone : tx.customer_phone
+  // const pages = paginateTransactionItems(tx);
+  const pages = paginateTransactionItems(tx, Number(company.items_per_page) || ITEMS_PER_PAGE)
+  const totalPages = pages.length
 
   const contentStyles = `
     .doc-banner { display: flex; justify-content: space-between; align-items: center; background: var(--wash); border-radius: 10px; padding: 14px 18px; margin-bottom: 18px; }
@@ -38,10 +41,11 @@ export function renderModern(tx, company) {
     .main-table td { padding: 8px; border-bottom: 1px solid var(--line); }
     .main-table tbody tr:nth-child(even) { background: var(--wash); }
     .notes { margin-top: 16px; font-size: calc(11px * var(--print-font-scale)); color: var(--ink-soft); }
-  `;
+  `
 
   const sheets = pages
-    .map((pageTx, pageIndex) => `
+    .map(
+      (pageTx, pageIndex) => `
     <div class="sheet">
       <div class="page-header">
         ${renderLetterhead(company)}
@@ -77,8 +81,9 @@ export function renderModern(tx, company) {
         ${renderFooter(company, tx, symbol)}
       </div>
     </div>
-  `)
-    .join('');
+  `,
+    )
+    .join('')
 
   return `
   <html><head><meta charset="utf-8"><style>
@@ -87,5 +92,5 @@ export function renderModern(tx, company) {
     ${contentStyles}
   </style></head><body>
     ${sheets}
-  </body></html>`;
+  </body></html>`
 }
