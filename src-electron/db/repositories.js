@@ -40,25 +40,99 @@ export class ProductRepository {
   findBySku(sku) {
     return this.db.prepare(`SELECT * FROM products WHERE sku = ? AND is_active = 1`).get(sku)
   }
-  create(data) {
+
+  /**
+   * Like findByBarcode/findBySku but ALSO returns soft-deleted rows. Deleting a
+   * product only sets is_active = 0, so its barcode/sku stay reserved by the
+   * UNIQUE indexes. CSV import uses this to find (and revive) those rows
+   * instead of blindly inserting and hitting "UNIQUE constraint failed".
+   */
+  findAnyByBarcode(barcode) {
+    return this.db.prepare(`SELECT * FROM products WHERE barcode = ? LIMIT 1`).get(barcode)
+  }
+  findAnyBySku(sku) {
+    return this.db.prepare(`SELECT * FROM products WHERE sku = ? LIMIT 1`).get(sku)
+  }
+
+  /** '' / whitespace -> null. Two products with barcode '' would collide on the UNIQUE index. */
+  _clean(data) {
+    const blankToNull = (v) => {
+      if (v === undefined || v === null) return null
+      const s = String(v).trim()
+      return s === '' ? null : s
+    }
+    return { ...data, sku: blankToNull(data.sku), barcode: blankToNull(data.barcode) }
+  }
+
+  /** Friendly duplicate check for ACTIVE products (excludes `exceptId`). */
+  _assertUnique(data, exceptId = null) {
+    for (const [column, label] of [['barcode', 'Barcode'], ['sku', 'SKU']]) {
+      if (!data[column]) continue
+      const clash = this.db
+        .prepare(`SELECT id, name FROM products WHERE ${column} = ? AND is_active = 1 AND id IS NOT ?`)
+        .get(data[column], exceptId)
+      if (clash) throw new Error(`${label} "${data[column]}" is already used by "${clash.name}"`)
+    }
+  }
+
+  create(input) {
+    const data = this._clean(input)
+    this._assertUnique(data)
+
+    // A soft-deleted product may still own this barcode/sku - revive it
+    // (with the new data) rather than violating the UNIQUE index.
+    const revivable =
+      (data.barcode && this.findAnyByBarcode(data.barcode)) ||
+      (data.sku && this.findAnyBySku(data.sku)) ||
+      null
+    if (revivable && !revivable.is_active) {
+      this.db
+        .prepare(
+          `UPDATE products SET
+             name=@name, sku=@sku, barcode=@barcode, cost_price=@cost_price, selling_price=@selling_price,
+             reorder_level=@reorder_level, category_id=@category_id, tax_id=@tax_id,
+             is_active = 1, updated_at = CURRENT_TIMESTAMP
+           WHERE id=@id`,
+        )
+        .run({
+          category_id: null,
+          tax_id: null,
+          cost_price: 0,
+          reorder_level: 0,
+          ...data,
+          id: revivable.id,
+        })
+      return this.find(revivable.id)
+    }
+
     const stmt = this.db.prepare(`
       INSERT INTO products (name, sku, barcode, cost_price, selling_price, stock_qty, reorder_level, category_id, tax_id)
       VALUES (@name, @sku, @barcode, @cost_price, @selling_price, @stock_qty, @reorder_level, @category_id, @tax_id)
     `)
-    const info = stmt.run({ reorder_level: 0, stock_qty: 0, ...data })
+    const info = stmt.run({
+      reorder_level: 0,
+      stock_qty: 0,
+      cost_price: 0,
+      category_id: null,
+      tax_id: null,
+      ...data,
+    })
     return this.find(info.lastInsertRowid)
   }
 
-  update(id, data) {
+  update(id, input) {
+    const data = this._clean(input)
+    this._assertUnique(data, id)
     const stmt = this.db.prepare(`
       UPDATE products SET
         name = @name, sku = @sku, barcode = @barcode,
         cost_price = @cost_price, selling_price = @selling_price,
         reorder_level = @reorder_level, category_id = @category_id, tax_id = @tax_id,
+        is_active = 1,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = @id
     `)
-    stmt.run({ id, ...data })
+    stmt.run({ category_id: null, tax_id: null, ...data, id })
     return this.find(id)
   }
 

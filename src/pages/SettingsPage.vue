@@ -58,6 +58,8 @@
         </div>
         <q-input v-model="form.company_website" label="Website" filled />
         <q-input v-model="form.company_vat" label="VAT / Tax Number" filled />
+        <q-input v-model="form.company_ibr" label="IBR Number" filled
+          hint="Shown next to the VAT number on quotations, invoices and purchase orders" />
         <q-input v-model="form.currency_symbol" label="Currency Symbol" filled style="max-width: 160px" />
       </q-card-section>
     </q-card>
@@ -267,6 +269,7 @@ const form = reactive({
   company_email: '',
   company_website: '',
   company_vat: '',
+  company_ibr: '',
   company_logo: '',
   company_stamp: '',
   currency_symbol: 'M',

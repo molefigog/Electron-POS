@@ -384,6 +384,13 @@ const migrations = [
       db.exec(`CREATE INDEX IF NOT EXISTS idx_transactions_supplier ON transactions(supplier_id)`)
     },
   },
+  {
+    version: 14,
+    name: 'add_company_ibr_setting',
+    up: (db) => {
+      db.exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('company_ibr', '')`)
+    },
+  },
 ]
 
 export function runMigrations(db) {

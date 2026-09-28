@@ -273,9 +273,14 @@ function filterProducts(val, update) {
   update(() => {
     const search = String(val || '').toLowerCase();
     productOptions.value = productsStore.items
-      .filter((p) => p.name.toLowerCase().includes(search) || String(p.sku || '').toLowerCase().includes(search))
+      .filter(
+        (p) =>
+          p.name.toLowerCase().includes(search) ||
+          String(p.sku || '').toLowerCase().includes(search) ||
+          String(p.barcode || '').toLowerCase().includes(search),
+      )
       .map((p) => ({
-        label: `${p.name} (${format(p.selling_price)})`,
+        label: `${p.name}${p.barcode ? ` [${p.barcode}]` : ''} (${format(p.selling_price)})`,
         value: p.id,
       }));
   });
@@ -461,9 +466,7 @@ onMounted(async () => {
     await settingsStore.fetchAll();
   }
 
-  if (!productsStore.items.length) {
-    await productsStore.fetchAll();
-  }
+  await productsStore.fetchAll();
   filterProducts('', (fn) => fn());
 
   const manualDraft = parseDraft(localStorage.getItem(DRAFT_KEY));

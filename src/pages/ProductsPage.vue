@@ -4,7 +4,7 @@
       <div class="text-h5">Products</div>
       <q-space />
       <q-input v-model="search" dense filled clearable placeholder="Search products..." style="width: 260px"
-        class="q-mr-sm" @update:model-value="load" />
+        class="q-mr-sm" @update:model-value="onSearchInput" />
       <q-btn flat color="primary" icon="select_all" label="Select All Filtered" class="q-mr-sm"
         @click="selectAllFiltered" />
       <q-btn v-if="hasSelectedRows" flat color="grey-8" icon="deselect" label="Clear Selection" class="q-mr-sm"
@@ -101,10 +101,11 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useQuasar } from 'quasar';
 import { useProductsStore } from 'src/stores/products';
 import { BaseRepository } from 'src/services/repositories/BaseRepository';
+import ProductRepository from 'src/services/repositories/ProductRepository';
 import * as XLSX from 'xlsx';
 
 const $q = useQuasar();
@@ -314,8 +315,22 @@ function exportToExcel() {
 }
 
 function load() {
-  productsStore.fetchAll({ search: search.value });
+  return productsStore.fetchAll({ search: search.value });
 }
+
+let searchTimer = null;
+function onSearchInput() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(load, 200);
+}
+
+// The products store is shared with the transaction / letter screens. Leaving
+// this page with a search term typed would otherwise leave only the filtered
+// rows in the store, so restore the full list on the way out.
+onBeforeUnmount(() => {
+  clearTimeout(searchTimer);
+  if (search.value) productsStore.fetchAll();
+});
 
 function normalizeKey(value) {
   return String(value || '')
@@ -460,6 +475,7 @@ async function importCsv() {
     }
 
     let successCount = 0;
+    let updatedCount = 0;
     const errors = [];
 
     for (let i = 0; i < rows.length; i += 1) {
@@ -486,22 +502,27 @@ async function importCsv() {
           tax_id: resolveTaxId(row),
         };
 
-        const existing = barcode
-          ? await window.dbBridge.call('products', 'findByBarcode', [barcode])
-          : (sku ? await window.dbBridge.call('products', 'findBySku', [sku]) : null);
+        // Look for an existing product INCLUDING soft-deleted ones: deleting a
+        // product only hides it, and its barcode/sku stay reserved by the
+        // UNIQUE indexes. Matching them lets a re-import update/revive them
+        // instead of failing with "UNIQUE constraint failed".
+        const existing =
+          (barcode && (await ProductRepository.findAnyByBarcode(barcode))) ||
+          (sku && (await ProductRepository.findAnyBySku(sku))) ||
+          null;
 
-        let productId;
         if (existing) {
           await productsStore.update(existing.id, payload);
-          productId = existing.id;
+          // Only seed opening stock for revived (previously deleted) products;
+          // re-importing over a live product must not double-count stock.
+          if (!existing.is_active) await applyStockQtyFromImport(existing.id, row.stock_qty);
+          updatedCount += 1;
         } else {
           const created = await productsStore.create(payload);
-          productId = created.id;
+          // Legacy exports include opening stock as stock_qty.
+          await applyStockQtyFromImport(created.id, row.stock_qty);
+          successCount += 1;
         }
-
-        // Legacy exports include opening stock as stock_qty.
-        await applyStockQtyFromImport(productId, row.stock_qty);
-        successCount += 1;
       } catch (err) {
         errors.push(`Row ${i + 2}: ${err.message}`);
       }
@@ -509,8 +530,11 @@ async function importCsv() {
 
     await load();
 
-    if (successCount > 0) {
-      $q.notify({ type: 'positive', message: `Imported ${successCount} product(s)` });
+    if (successCount > 0 || updatedCount > 0) {
+      $q.notify({
+        type: 'positive',
+        message: `Imported ${successCount} new, updated ${updatedCount} existing product(s)`,
+      });
       showImport.value = false;
       csvFile.value = null;
     }

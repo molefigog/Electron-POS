@@ -1,0 +1,424 @@
+diff --git a/migrations.js b/migrations.js
+index 64c5ebd..b9b4c71 100644
+--- a/migrations.js
++++ b/migrations.js
+@@ -384,6 +384,13 @@ const migrations = [
+       db.exec(`CREATE INDEX IF NOT EXISTS idx_transactions_supplier ON transactions(supplier_id)`)
+     },
+   },
++  {
++    version: 14,
++    name: 'add_company_ibr_setting',
++    up: (db) => {
++      db.exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('company_ibr', '')`)
++    },
++  },
+ ]
+ 
+ export function runMigrations(db) {
+diff --git a/src-electron/db/ipc-handlers.js b/src-electron/db/ipc-handlers.js
+index 579fe68..2894d6d 100644
+--- a/src-electron/db/ipc-handlers.js
++++ b/src-electron/db/ipc-handlers.js
+@@ -112,7 +112,7 @@ export function registerIpcHandlers(ipcMain, db) {
+   // Allow-list of which methods may be invoked from the renderer, per repo.
+   // This is the whole point of the bridge: the renderer can never run raw SQL.
+   const allowList = {
+-    products: ['all', 'find', 'findByBarcode', 'create', 'update', 'delete'],
++    products: ['all', 'find', 'findByBarcode', 'findBySku', 'findAnyByBarcode', 'findAnyBySku', 'create', 'update', 'delete'],
+     categories: ['all', 'create', 'delete'],
+     taxes: ['all', 'create', 'delete'],
+     customers: ['all', 'find', 'create', 'update', 'delete'],
+diff --git a/src-electron/db/repositories.js b/src-electron/db/repositories.js
+index b4aeae5..2321039 100644
+--- a/src-electron/db/repositories.js
++++ b/src-electron/db/repositories.js
+@@ -40,25 +40,99 @@ export class ProductRepository {
+   findBySku(sku) {
+     return this.db.prepare(`SELECT * FROM products WHERE sku = ? AND is_active = 1`).get(sku)
+   }
+-  create(data) {
++
++  /**
++   * Like findByBarcode/findBySku but ALSO returns soft-deleted rows. Deleting a
++   * product only sets is_active = 0, so its barcode/sku stay reserved by the
++   * UNIQUE indexes. CSV import uses this to find (and revive) those rows
++   * instead of blindly inserting and hitting "UNIQUE constraint failed".
++   */
++  findAnyByBarcode(barcode) {
++    return this.db.prepare(`SELECT * FROM products WHERE barcode = ? LIMIT 1`).get(barcode)
++  }
++  findAnyBySku(sku) {
++    return this.db.prepare(`SELECT * FROM products WHERE sku = ? LIMIT 1`).get(sku)
++  }
++
++  /** '' / whitespace -> null. Two products with barcode '' would collide on the UNIQUE index. */
++  _clean(data) {
++    const blankToNull = (v) => {
++      if (v === undefined || v === null) return null
++      const s = String(v).trim()
++      return s === '' ? null : s
++    }
++    return { ...data, sku: blankToNull(data.sku), barcode: blankToNull(data.barcode) }
++  }
++
++  /** Friendly duplicate check for ACTIVE products (excludes `exceptId`). */
++  _assertUnique(data, exceptId = null) {
++    for (const [column, label] of [['barcode', 'Barcode'], ['sku', 'SKU']]) {
++      if (!data[column]) continue
++      const clash = this.db
++        .prepare(`SELECT id, name FROM products WHERE ${column} = ? AND is_active = 1 AND id IS NOT ?`)
++        .get(data[column], exceptId)
++      if (clash) throw new Error(`${label} "${data[column]}" is already used by "${clash.name}"`)
++    }
++  }
++
++  create(input) {
++    const data = this._clean(input)
++    this._assertUnique(data)
++
++    // A soft-deleted product may still own this barcode/sku - revive it
++    // (with the new data) rather than violating the UNIQUE index.
++    const revivable =
++      (data.barcode && this.findAnyByBarcode(data.barcode)) ||
++      (data.sku && this.findAnyBySku(data.sku)) ||
++      null
++    if (revivable && !revivable.is_active) {
++      this.db
++        .prepare(
++          `UPDATE products SET
++             name=@name, sku=@sku, barcode=@barcode, cost_price=@cost_price, selling_price=@selling_price,
++             reorder_level=@reorder_level, category_id=@category_id, tax_id=@tax_id,
++             is_active = 1, updated_at = CURRENT_TIMESTAMP
++           WHERE id=@id`,
++        )
++        .run({
++          category_id: null,
++          tax_id: null,
++          cost_price: 0,
++          reorder_level: 0,
++          ...data,
++          id: revivable.id,
++        })
++      return this.find(revivable.id)
++    }
++
+     const stmt = this.db.prepare(`
+       INSERT INTO products (name, sku, barcode, cost_price, selling_price, stock_qty, reorder_level, category_id, tax_id)
+       VALUES (@name, @sku, @barcode, @cost_price, @selling_price, @stock_qty, @reorder_level, @category_id, @tax_id)
+     `)
+-    const info = stmt.run({ reorder_level: 0, stock_qty: 0, ...data })
++    const info = stmt.run({
++      reorder_level: 0,
++      stock_qty: 0,
++      cost_price: 0,
++      category_id: null,
++      tax_id: null,
++      ...data,
++    })
+     return this.find(info.lastInsertRowid)
+   }
+ 
+-  update(id, data) {
++  update(id, input) {
++    const data = this._clean(input)
++    this._assertUnique(data, id)
+     const stmt = this.db.prepare(`
+       UPDATE products SET
+         name = @name, sku = @sku, barcode = @barcode,
+         cost_price = @cost_price, selling_price = @selling_price,
+         reorder_level = @reorder_level, category_id = @category_id, tax_id = @tax_id,
++        is_active = 1,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = @id
+     `)
+-    stmt.run({ id, ...data })
++    stmt.run({ category_id: null, tax_id: null, ...data, id })
+     return this.find(id)
+   }
+ 
+diff --git a/src/components/transactions/TransactionForm.vue b/src/components/transactions/TransactionForm.vue
+index 38efaa4..db69478 100644
+--- a/src/components/transactions/TransactionForm.vue
++++ b/src/components/transactions/TransactionForm.vue
+@@ -43,7 +43,7 @@
+       <div class="row q-col-gutter-sm items-center">
+         <div class="col-6">
+           <q-select ref="productSelectRef" v-model="productPick" :options="productOptions"
+-            label="Add product (search by name)" use-input emit-value map-options @filter="filterProducts"
++            label="Add product (search by name, SKU or barcode)" use-input emit-value map-options @filter="filterProducts"
+             @update:model-value="onPickProduct" />
+         </div>
+         <div class="col-6">
+@@ -329,9 +329,20 @@ function filterCustomers(val, update) {
+ 
+ function filterProducts(val, update) {
+   update(() => {
++    const needle = String(val || '').trim().toLowerCase();
+     productOptions.value = productsStore.items
+-      .filter((p) => p.name.toLowerCase().includes((val || '').toLowerCase()) || p.sku?.includes(val || ''))
+-      .map((p, i) => ({ label: `${i + 1}. ${p.name}  (${format(p.selling_price)})`, value: p.id, product: p }));
++      .filter(
++        (p) =>
++          !needle ||
++          String(p.name || '').toLowerCase().includes(needle) ||
++          String(p.sku || '').toLowerCase().includes(needle) ||
++          String(p.barcode || '').toLowerCase().includes(needle),
++      )
++      .map((p, i) => ({
++        label: `${i + 1}. ${p.name}${p.barcode ? `  [${p.barcode}]` : ''}  (${format(p.selling_price)})`,
++        value: p.id,
++        product: p,
++      }));
+   });
+ }
+ 
+@@ -430,7 +441,8 @@ async function saveNewSupplier() {
+ onMounted(async () => {
+   if (!customersStore.items.length) await customersStore.fetchAll();
+   if (!suppliersStore.items.length) await suppliersStore.fetchAll();
+-  if (!productsStore.items.length) await productsStore.fetchAll();
++  // Always reload the full list: the Products page may have left a filtered subset in the store.
++  await productsStore.fetchAll();
+   filterCustomers('', (fn) => fn());
+   filterSuppliers('', (fn) => fn());
+   filterProducts('', (fn) => fn());
+diff --git a/src/pages/LetterPage.vue b/src/pages/LetterPage.vue
+index a5aeaf7..6797755 100644
+--- a/src/pages/LetterPage.vue
++++ b/src/pages/LetterPage.vue
+@@ -273,9 +273,14 @@ function filterProducts(val, update) {
+   update(() => {
+     const search = String(val || '').toLowerCase();
+     productOptions.value = productsStore.items
+-      .filter((p) => p.name.toLowerCase().includes(search) || String(p.sku || '').toLowerCase().includes(search))
++      .filter(
++        (p) =>
++          p.name.toLowerCase().includes(search) ||
++          String(p.sku || '').toLowerCase().includes(search) ||
++          String(p.barcode || '').toLowerCase().includes(search),
++      )
+       .map((p) => ({
+-        label: `${p.name} (${format(p.selling_price)})`,
++        label: `${p.name}${p.barcode ? ` [${p.barcode}]` : ''} (${format(p.selling_price)})`,
+         value: p.id,
+       }));
+   });
+@@ -461,9 +466,7 @@ onMounted(async () => {
+     await settingsStore.fetchAll();
+   }
+ 
+-  if (!productsStore.items.length) {
+-    await productsStore.fetchAll();
+-  }
++  await productsStore.fetchAll();
+   filterProducts('', (fn) => fn());
+ 
+   const manualDraft = parseDraft(localStorage.getItem(DRAFT_KEY));
+diff --git a/src/pages/ProductsPage.vue b/src/pages/ProductsPage.vue
+index a275372..2c8c40c 100644
+--- a/src/pages/ProductsPage.vue
++++ b/src/pages/ProductsPage.vue
+@@ -4,7 +4,7 @@
+       <div class="text-h5">Products</div>
+       <q-space />
+       <q-input v-model="search" dense filled clearable placeholder="Search products..." style="width: 260px"
+-        class="q-mr-sm" @update:model-value="load" />
++        class="q-mr-sm" @update:model-value="onSearchInput" />
+       <q-btn flat color="primary" icon="select_all" label="Select All Filtered" class="q-mr-sm"
+         @click="selectAllFiltered" />
+       <q-btn v-if="hasSelectedRows" flat color="grey-8" icon="deselect" label="Clear Selection" class="q-mr-sm"
+@@ -101,10 +101,11 @@
+ </template>
+ 
+ <script setup>
+-import { ref, reactive, computed, onMounted } from 'vue';
++import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue';
+ import { useQuasar } from 'quasar';
+ import { useProductsStore } from 'src/stores/products';
+ import { BaseRepository } from 'src/services/repositories/BaseRepository';
++import ProductRepository from 'src/services/repositories/ProductRepository';
+ import * as XLSX from 'xlsx';
+ 
+ const $q = useQuasar();
+@@ -314,9 +315,23 @@ function exportToExcel() {
+ }
+ 
+ function load() {
+-  productsStore.fetchAll({ search: search.value });
++  return productsStore.fetchAll({ search: search.value });
+ }
+ 
++let searchTimer = null;
++function onSearchInput() {
++  clearTimeout(searchTimer);
++  searchTimer = setTimeout(load, 200);
++}
++
++// The products store is shared with the transaction / letter screens. Leaving
++// this page with a search term typed would otherwise leave only the filtered
++// rows in the store, so restore the full list on the way out.
++onBeforeUnmount(() => {
++  clearTimeout(searchTimer);
++  if (search.value) productsStore.fetchAll();
++});
++
+ function normalizeKey(value) {
+   return String(value || '')
+     .trim()
+@@ -460,6 +475,7 @@ async function importCsv() {
+     }
+ 
+     let successCount = 0;
++    let updatedCount = 0;
+     const errors = [];
+ 
+     for (let i = 0; i < rows.length; i += 1) {
+@@ -486,22 +502,27 @@ async function importCsv() {
+           tax_id: resolveTaxId(row),
+         };
+ 
+-        const existing = barcode
+-          ? await window.dbBridge.call('products', 'findByBarcode', [barcode])
+-          : (sku ? await window.dbBridge.call('products', 'findBySku', [sku]) : null);
++        // Look for an existing product INCLUDING soft-deleted ones: deleting a
++        // product only hides it, and its barcode/sku stay reserved by the
++        // UNIQUE indexes. Matching them lets a re-import update/revive them
++        // instead of failing with "UNIQUE constraint failed".
++        const existing =
++          (barcode && (await ProductRepository.findAnyByBarcode(barcode))) ||
++          (sku && (await ProductRepository.findAnyBySku(sku))) ||
++          null;
+ 
+-        let productId;
+         if (existing) {
+           await productsStore.update(existing.id, payload);
+-          productId = existing.id;
++          // Only seed opening stock for revived (previously deleted) products;
++          // re-importing over a live product must not double-count stock.
++          if (!existing.is_active) await applyStockQtyFromImport(existing.id, row.stock_qty);
++          updatedCount += 1;
+         } else {
+           const created = await productsStore.create(payload);
+-          productId = created.id;
++          // Legacy exports include opening stock as stock_qty.
++          await applyStockQtyFromImport(created.id, row.stock_qty);
++          successCount += 1;
+         }
+-
+-        // Legacy exports include opening stock as stock_qty.
+-        await applyStockQtyFromImport(productId, row.stock_qty);
+-        successCount += 1;
+       } catch (err) {
+         errors.push(`Row ${i + 2}: ${err.message}`);
+       }
+@@ -509,8 +530,11 @@ async function importCsv() {
+ 
+     await load();
+ 
+-    if (successCount > 0) {
+-      $q.notify({ type: 'positive', message: `Imported ${successCount} product(s)` });
++    if (successCount > 0 || updatedCount > 0) {
++      $q.notify({
++        type: 'positive',
++        message: `Imported ${successCount} new, updated ${updatedCount} existing product(s)`,
++      });
+       showImport.value = false;
+       csvFile.value = null;
+     }
+diff --git a/src/pages/SettingsPage.vue b/src/pages/SettingsPage.vue
+index 8ee5627..b75b63d 100644
+--- a/src/pages/SettingsPage.vue
++++ b/src/pages/SettingsPage.vue
+@@ -58,6 +58,8 @@
+         </div>
+         <q-input v-model="form.company_website" label="Website" filled />
+         <q-input v-model="form.company_vat" label="VAT / Tax Number" filled />
++        <q-input v-model="form.company_ibr" label="IBR Number" filled
++          hint="Shown next to the VAT number on quotations, invoices and purchase orders" />
+         <q-input v-model="form.currency_symbol" label="Currency Symbol" filled style="max-width: 160px" />
+       </q-card-section>
+     </q-card>
+@@ -267,6 +269,7 @@ const form = reactive({
+   company_email: '',
+   company_website: '',
+   company_vat: '',
++  company_ibr: '',
+   company_logo: '',
+   company_stamp: '',
+   currency_symbol: 'M',
+diff --git a/src/services/print-templates/shared.js b/src/services/print-templates/shared.js
+index e584aed..dba5d07 100644
+--- a/src/services/print-templates/shared.js
++++ b/src/services/print-templates/shared.js
+@@ -213,7 +213,7 @@ function renderSignatureBlock(company) {
+ }
+ /**
+  * Letterhead: logo/initials + centered company identity + a row of
+- * detail chips (address / phone / email / VAT). Identical markup across
++ * detail chips (address / phone / email / VAT / IBR). Identical markup across
+  * every template - only the CSS variables (set by baseShellCss) change
+  * how it looks.
+  */
+@@ -224,6 +224,7 @@ export function renderLetterhead(company) {
+     company.company_phone && `<span class="detail">${ICONS.phone}${company.company_phone}</span>`,
+     company.company_email && `<span class="detail">${ICONS.mail}${company.company_email}</span>`,
+     company.company_vat && `<span class="detail">${ICONS.vat}VAT: ${company.company_vat}</span>`,
++    company.company_ibr && `<span class="detail">${ICONS.vat}IBR: ${escapeHtml(company.company_ibr)}</span>`,
+   ]
+     .filter(Boolean)
+     .join('')
+diff --git a/src/services/repositories/ProductRepository.js b/src/services/repositories/ProductRepository.js
+index 0fbef6e..ed029a8 100644
+--- a/src/services/repositories/ProductRepository.js
++++ b/src/services/repositories/ProductRepository.js
+@@ -6,6 +6,9 @@ class ProductRepository extends BaseRepository {
+   all(filters = {}) { return this.call('all', filters); }
+   find(id) { return this.call('find', id); }
+   findByBarcode(barcode) { return this.call('findByBarcode', barcode); }
++  findBySku(sku) { return this.call('findBySku', sku); }
++  findAnyByBarcode(barcode) { return this.call('findAnyByBarcode', barcode); }
++  findAnyBySku(sku) { return this.call('findAnyBySku', sku); }
+   create(data) { return this.call('create', data); }
+   update(id, data) { return this.call('update', id, data); }
+   delete(id) { return this.call('delete', id); }
+diff --git a/src/stores/products.js b/src/stores/products.js
+index 98f2e70..641775d 100644
+--- a/src/stores/products.js
++++ b/src/stores/products.js
+@@ -15,15 +15,20 @@ export const useProductsStore = defineStore('products', {
+ 
+   actions: {
+     async fetchAll(filters = {}) {
++      // Only the most recent request may write to the store. Without this,
++      // a slow response for an earlier keystroke could land after the latest
++      // one and overwrite it with stale results.
++      const requestId = (this._requestSeq = (this._requestSeq || 0) + 1);
+       this.loading = true;
+       this.error = null;
+       try {
+-        this.items = await ProductRepository.all(filters);
++        const rows = await ProductRepository.all(filters);
++        if (requestId === this._requestSeq) this.items = rows;
+       } catch (err) {
+-        this.error = err.message;
++        if (requestId === this._requestSeq) this.error = err.message;
+         throw err;
+       } finally {
+-        this.loading = false;
++        if (requestId === this._requestSeq) this.loading = false;
+       }
+     },
+ 
+diff --git a/src/stores/settings.js b/src/stores/settings.js
+index 213d5ad..7dae2fe 100644
+--- a/src/stores/settings.js
++++ b/src/stores/settings.js
+@@ -9,6 +9,7 @@ const DEFAULT_SETTINGS = {
+   company_email: '',
+   company_website: '',
+   company_vat: '',
++  company_ibr: '',
+   company_logo: '',
+   company_stamp: '',
+   currency_symbol: 'M',

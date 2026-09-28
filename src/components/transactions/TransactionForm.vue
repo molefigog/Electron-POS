@@ -41,15 +41,21 @@
 
     <div class="transaction-form__products">
       <div class="row q-col-gutter-sm items-center">
-        <div class="col-6">
+        <div class="col-5">
           <q-select ref="productSelectRef" v-model="productPick" :options="productOptions"
-            label="Add product (search by name)" use-input emit-value map-options @filter="filterProducts"
+            label="Add product (search by name, SKU or barcode)" use-input emit-value map-options @filter="filterProducts"
             @update:model-value="onPickProduct" />
         </div>
-        <div class="col-6">
+        <div class="col-5">
           <q-input ref="skuInputRef" v-model="skuInput" label="SKU / Barcode (auto-adds on match)" dense filled>
             <template #prepend><q-icon name="qr_code_scanner" /></template>
           </q-input>
+        </div>
+        <div class="col-2">
+          <q-btn outline no-caps dense color="primary" icon="edit_note" label="Manual item" class="full-width"
+            @click="addManualItem">
+            <q-tooltip>Add a line item without searching (custom description and price)</q-tooltip>
+          </q-btn>
         </div>
       </div>
     </div>
@@ -71,7 +77,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(item, idx) in draft.lineItems" :key="idx"
+          <tr v-for="(item, idx) in draft.lineItems" :key="idx" :data-row="idx"
             :class="{ 'row-active': idx === activeRowIndex, 'row-drag-over': idx === dragOverIndex }"
             @dragover.prevent="dragOverIndex = idx" @dragleave="dragOverIndex = null" @drop="onDrop(idx)">
             <td class="text-center">
@@ -85,7 +91,11 @@
                 <q-tooltip>Drag to reorder</q-tooltip>
               </q-icon>
             </td>
-            <td>{{ item.name }}</td>
+            <td>
+              <q-input v-if="item.product_id == null" :ref="(el) => setNameRef(el, idx)" v-model="item.name" dense
+                borderless placeholder="Item description" @focus="activeRowIndex = idx" />
+              <template v-else>{{ item.name }}</template>
+            </td>
             <td class="text-left" style="width: 90px">
               <q-input :ref="(el) => setQtyRef(el, idx)" v-model.number="item.quantity" type="number" dense borderless
                 class="text-left" min="0" step="1" @focus="activeRowIndex = idx" @keydown="onRowKeydown($event, idx)" />
@@ -227,13 +237,40 @@ function setQtyRef(el, idx) {
   qtyRefs.value[idx] = el;
 }
 
-function focusRow(idx) {
+const nameRefs = ref([]);
+function setNameRef(el, idx) {
+  nameRefs.value[idx] = el;
+}
+
+/**
+ * Keeps a cart row visible. scrollIntoView({ block: 'nearest' }) scrolls
+ * whichever ancestor is the scroller (the cart wrapper) and does nothing if
+ * the row is already fully in view, so it is safe to call after every add,
+ * quantity bump and Up/Down navigation.
+ */
+function scrollRowIntoView(idx) {
+  const row = document.querySelector(`.transaction-form__table tbody tr[data-row="${idx}"]`);
+  row?.scrollIntoView({ block: 'nearest' });
+}
+
+function focusRow(idx, { field = 'qty' } = {}) {
   if (idx == null || idx < 0) return;
   activeRowIndex.value = idx;
+  // Wait for Vue to render the new row, then focus and scroll. Scrolling
+  // again on the next frame wins over the browser's own focus-scroll, which
+  // could otherwise leave the new row half hidden at the bottom edge.
   nextTick(() => {
-    qtyRefs.value[idx]?.focus?.();
-    qtyRefs.value[idx]?.select?.();
+    const target = field === 'name' ? nameRefs.value[idx] : qtyRefs.value[idx];
+    target?.focus?.();
+    target?.select?.();
+    scrollRowIntoView(idx);
+    requestAnimationFrame(() => scrollRowIntoView(idx));
   });
+}
+
+function addManualItem() {
+  const idx = transactionsStore.addManualItem();
+  focusRow(idx, { field: 'name' });
 }
 
 function onRowKeydown(e, idx) {
@@ -329,9 +366,20 @@ function filterCustomers(val, update) {
 
 function filterProducts(val, update) {
   update(() => {
+    const needle = String(val || '').trim().toLowerCase();
     productOptions.value = productsStore.items
-      .filter((p) => p.name.toLowerCase().includes((val || '').toLowerCase()) || p.sku?.includes(val || ''))
-      .map((p, i) => ({ label: `${i + 1}. ${p.name}  (${format(p.selling_price)})`, value: p.id, product: p }));
+      .filter(
+        (p) =>
+          !needle ||
+          String(p.name || '').toLowerCase().includes(needle) ||
+          String(p.sku || '').toLowerCase().includes(needle) ||
+          String(p.barcode || '').toLowerCase().includes(needle),
+      )
+      .map((p, i) => ({
+        label: `${i + 1}. ${p.name}${p.barcode ? `  [${p.barcode}]` : ''}  (${format(p.selling_price)})`,
+        value: p.id,
+        product: p,
+      }));
   });
 }
 
@@ -430,7 +478,8 @@ async function saveNewSupplier() {
 onMounted(async () => {
   if (!customersStore.items.length) await customersStore.fetchAll();
   if (!suppliersStore.items.length) await suppliersStore.fetchAll();
-  if (!productsStore.items.length) await productsStore.fetchAll();
+  // Always reload the full list: the Products page may have left a filtered subset in the store.
+  await productsStore.fetchAll();
   filterCustomers('', (fn) => fn());
   filterSuppliers('', (fn) => fn());
   filterProducts('', (fn) => fn());
@@ -495,6 +544,10 @@ onBeforeUnmount(() => {
 .transaction-form__table {
   width: 100%;
   border-collapse: collapse;
+}
+
+.transaction-form__table tbody tr {
+  scroll-margin-block: 6px;
 }
 
 .transaction-form__table th,

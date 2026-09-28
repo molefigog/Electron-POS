@@ -213,7 +213,7 @@ function renderSignatureBlock(company) {
 }
 /**
  * Letterhead: logo/initials + centered company identity + a row of
- * detail chips (address / phone / email / VAT). Identical markup across
+ * detail chips (address / phone / email / VAT / IBR). Identical markup across
  * every template - only the CSS variables (set by baseShellCss) change
  * how it looks.
  */
@@ -224,6 +224,7 @@ export function renderLetterhead(company) {
     company.company_phone && `<span class="detail">${ICONS.phone}${company.company_phone}</span>`,
     company.company_email && `<span class="detail">${ICONS.mail}${company.company_email}</span>`,
     company.company_vat && `<span class="detail">${ICONS.vat}VAT: ${company.company_vat}</span>`,
+    company.company_ibr && `<span class="detail">${ICONS.vat}IBR: ${escapeHtml(company.company_ibr)}</span>`,
   ]
     .filter(Boolean)
     .join('')

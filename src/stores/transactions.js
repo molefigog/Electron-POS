@@ -154,6 +154,27 @@ export const useTransactionsStore = defineStore('transactions', {
       return this.draft.lineItems.length - 1;
     },
 
+    /**
+     * Adds a free-text line (no product, no search). product_id stays null,
+     * which the repositories already support: no stock movement is recorded
+     * and the typed name is the snapshot stored on the document.
+     */
+    addManualItem() {
+      const settingsStore = useSettingsStore();
+      const fallbackRate = Number(settingsStore.values.default_tax_rate || 0);
+      this.draft.lineItems.push({
+        product_id: null,
+        name: '',
+        quantity: 1,
+        box_size: null,
+        box_count: null,
+        unit_price: null, // must be typed in (checked on save unless it's a purchase order)
+        discount_pct: 0,
+        tax_rate: fallbackRate,
+      });
+      return this.draft.lineItems.length - 1;
+    },
+
     removeLineItem(index) {
       this.draft.lineItems.splice(index, 1);
     },
@@ -172,6 +193,19 @@ export const useTransactionsStore = defineStore('transactions', {
             ? 'purchase_order'
             : this.draft.type;
       const status = saveAs || (type === 'quote' ? 'quote' : type === 'invoice' ? 'invoice' : 'purchase_order');
+
+      // Manual (product-less) lines need a description, and a price unless
+      // this is a purchase order, otherwise they would print blank or be
+      // silently left out of the totals.
+      this.draft.lineItems.forEach((item, i) => {
+        if (item.product_id != null) return;
+        item.name = String(item.name || '').trim();
+        if (!item.name) throw new Error(`Row ${i + 1}: enter a description for the manual item`);
+        const priced = item.unit_price !== null && item.unit_price !== '' && !Number.isNaN(Number(item.unit_price));
+        if (type !== 'purchase_order' && !priced) {
+          throw new Error(`Row ${i + 1}: enter a price for "${item.name}"`);
+        }
+      });
 
       const payload = {
         type,

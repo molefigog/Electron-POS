@@ -9,6 +9,7 @@ const DEFAULT_SETTINGS = {
   company_email: '',
   company_website: '',
   company_vat: '',
+  company_ibr: '',
   company_logo: '',
   company_stamp: '',
   currency_symbol: 'M',

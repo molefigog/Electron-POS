@@ -15,15 +15,20 @@ export const useProductsStore = defineStore('products', {
 
   actions: {
     async fetchAll(filters = {}) {
+      // Only the most recent request may write to the store. Without this,
+      // a slow response for an earlier keystroke could land after the latest
+      // one and overwrite it with stale results.
+      const requestId = (this._requestSeq = (this._requestSeq || 0) + 1);
       this.loading = true;
       this.error = null;
       try {
-        this.items = await ProductRepository.all(filters);
+        const rows = await ProductRepository.all(filters);
+        if (requestId === this._requestSeq) this.items = rows;
       } catch (err) {
-        this.error = err.message;
+        if (requestId === this._requestSeq) this.error = err.message;
         throw err;
       } finally {
-        this.loading = false;
+        if (requestId === this._requestSeq) this.loading = false;
       }
     },
 

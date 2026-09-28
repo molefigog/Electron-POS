@@ -112,7 +112,7 @@ export function registerIpcHandlers(ipcMain, db) {
   // Allow-list of which methods may be invoked from the renderer, per repo.
   // This is the whole point of the bridge: the renderer can never run raw SQL.
   const allowList = {
-    products: ['all', 'find', 'findByBarcode', 'create', 'update', 'delete'],
+    products: ['all', 'find', 'findByBarcode', 'findBySku', 'findAnyByBarcode', 'findAnyBySku', 'create', 'update', 'delete'],
     categories: ['all', 'create', 'delete'],
     taxes: ['all', 'create', 'delete'],
     customers: ['all', 'find', 'create', 'update', 'delete'],
