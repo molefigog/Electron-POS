@@ -123,7 +123,7 @@ const migrations = [
           ('next_invoice_seq', '1'),
           ('footer_note', 'Thank you for your business!'),
           ('payment_details', '');
-      `);
+      `)
     },
   },
   {
@@ -135,7 +135,7 @@ const migrations = [
           ('company_website', ''),
           ('footer_note', 'Thank you for your business!'),
           ('payment_details', '');
-      `);
+      `)
     },
   },
   {
@@ -146,7 +146,7 @@ const migrations = [
         INSERT OR IGNORE INTO settings (key, value) VALUES
           ('company_vat', ''),
           ('mobile_money_details', '');
-      `);
+      `)
     },
   },
   {
@@ -162,7 +162,7 @@ const migrations = [
       // tax-inclusive _computeTotals for where it's actually used.
       db.exec(`
         INSERT OR IGNORE INTO settings (key, value) VALUES ('default_tax_rate', '0');
-      `);
+      `)
     },
   },
   {
@@ -175,15 +175,22 @@ const migrations = [
       // and store just the path instead.
       db.exec(`
         INSERT OR IGNORE INTO settings (key, value) VALUES ('company_logo', '');
-      `);
+      `)
     },
   },
   {
     version: 6,
     name: 'purchase_orders_and_nullable_item_amounts',
     up: (db) => {
-      const txColumns = new Set(db.prepare(`PRAGMA table_info(transactions)`).all().map((c) => c.name));
-      const manualReferenceSelect = txColumns.has('manual_reference') ? 'manual_reference' : 'NULL AS manual_reference';
+      const txColumns = new Set(
+        db
+          .prepare(`PRAGMA table_info(transactions)`)
+          .all()
+          .map((c) => c.name),
+      )
+      const manualReferenceSelect = txColumns.has('manual_reference')
+        ? 'manual_reference'
+        : 'NULL AS manual_reference'
 
       db.exec(`
         INSERT OR IGNORE INTO settings (key, value) VALUES
@@ -252,7 +259,7 @@ const migrations = [
         CREATE INDEX IF NOT EXISTS idx_transaction_items_txn ON transaction_items(transaction_id);
 
         PRAGMA foreign_keys = ON;
-      `);
+      `)
     },
   },
   {
@@ -261,7 +268,7 @@ const migrations = [
     up: (db) => {
       db.exec(`
         INSERT OR IGNORE INTO settings (key, value) VALUES ('theme_mode', 'system');
-      `);
+      `)
     },
   },
   {
@@ -272,21 +279,26 @@ const migrations = [
         INSERT OR IGNORE INTO settings (key, value) VALUES
           ('default_printer', ''),
           ('silent_printing', 'false');
-      `);
+      `)
     },
   },
   {
     version: 9,
     name: 'add_batch_box_fields_to_transaction_items',
     up: (db) => {
-      const itemColumns = new Set(db.prepare(`PRAGMA table_info(transaction_items)`).all().map((c) => c.name));
+      const itemColumns = new Set(
+        db
+          .prepare(`PRAGMA table_info(transaction_items)`)
+          .all()
+          .map((c) => c.name),
+      )
 
       if (!itemColumns.has('box_size')) {
-        db.exec(`ALTER TABLE transaction_items ADD COLUMN box_size REAL`);
+        db.exec(`ALTER TABLE transaction_items ADD COLUMN box_size REAL`)
       }
 
       if (!itemColumns.has('box_count')) {
-        db.exec(`ALTER TABLE transaction_items ADD COLUMN box_count REAL`);
+        db.exec(`ALTER TABLE transaction_items ADD COLUMN box_count REAL`)
       }
     },
   },
@@ -298,7 +310,7 @@ const migrations = [
         INSERT OR IGNORE INTO settings (key, value) VALUES
           ('print_font_size', '12'),
           ('print_font_weight', '400');
-      `);
+      `)
     },
   },
   {
@@ -313,7 +325,7 @@ const migrations = [
       // default set and the UI-friendly action list).
       db.exec(`
         INSERT OR IGNORE INTO settings (key, value) VALUES ('keyboard_shortcuts', '{}');
-      `);
+      `)
     },
   },
   {
@@ -337,14 +349,19 @@ const migrations = [
           value TEXT
         );
         INSERT OR IGNORE INTO sync_state (key, value) VALUES ('cursor', '');
-      `);
+      `)
     },
   },
   {
     version: 13,
     name: 'add_suppliers_and_purchase_order_supplier',
     up: (db) => {
-      const transactionColumns = new Set(db.prepare(`PRAGMA table_info(transactions)`).all().map((c) => c.name));
+      const transactionColumns = new Set(
+        db
+          .prepare(`PRAGMA table_info(transactions)`)
+          .all()
+          .map((c) => c.name),
+      )
       db.exec(`
         CREATE TABLE IF NOT EXISTS suppliers (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -358,14 +375,16 @@ const migrations = [
           updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_suppliers_name ON suppliers(name);
-      `);
+      `)
       if (!transactionColumns.has('supplier_id')) {
-        db.exec(`ALTER TABLE transactions ADD COLUMN supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL`);
+        db.exec(
+          `ALTER TABLE transactions ADD COLUMN supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL`,
+        )
       }
-      db.exec(`CREATE INDEX IF NOT EXISTS idx_transactions_supplier ON transactions(supplier_id)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_transactions_supplier ON transactions(supplier_id)`)
     },
   },
-];
+]
 
 export function runMigrations(db) {
   db.exec(`
@@ -374,17 +393,25 @@ export function runMigrations(db) {
       name TEXT NOT NULL,
       applied_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
-  `);
+  `)
 
-  const applied = new Set(db.prepare('SELECT version FROM migrations').all().map((r) => r.version));
+  const applied = new Set(
+    db
+      .prepare('SELECT version FROM migrations')
+      .all()
+      .map((r) => r.version),
+  )
 
   const run = db.transaction(() => {
     for (const migration of migrations) {
-      if (applied.has(migration.version)) continue;
-      migration.up(db);
-      db.prepare('INSERT INTO migrations (version, name) VALUES (?, ?)').run(migration.version, migration.name);
+      if (applied.has(migration.version)) continue
+      migration.up(db)
+      db.prepare('INSERT INTO migrations (version, name) VALUES (?, ?)').run(
+        migration.version,
+        migration.name,
+      )
     }
-  });
+  })
 
-  run();
+  run()
 }

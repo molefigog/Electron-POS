@@ -473,19 +473,34 @@ async function importCsv() {
       }
 
       try {
-        const created = await productsStore.create({
+        const barcode = (row.barcode || '').trim() || null;
+        const sku = (row.sku || '').trim() || null;
+        const payload = {
           name,
-          sku: (row.sku || '').trim() || null,
-          barcode: (row.barcode || '').trim() || null,
+          sku,
+          barcode,
           cost_price: readNumeric(row.cost_price, 0),
           selling_price: readNumeric(sellingPriceRaw, 0),
           reorder_level: readNumeric(row.reorder_level, 0),
           category_id: resolveCategoryId(row),
           tax_id: resolveTaxId(row),
-        });
+        };
+
+        const existing = barcode
+          ? await window.dbBridge.call('products', 'findByBarcode', [barcode])
+          : (sku ? await window.dbBridge.call('products', 'findBySku', [sku]) : null);
+
+        let productId;
+        if (existing) {
+          await productsStore.update(existing.id, payload);
+          productId = existing.id;
+        } else {
+          const created = await productsStore.create(payload);
+          productId = created.id;
+        }
 
         // Legacy exports include opening stock as stock_qty.
-        await applyStockQtyFromImport(created.id, row.stock_qty);
+        await applyStockQtyFromImport(productId, row.stock_qty);
         successCount += 1;
       } catch (err) {
         errors.push(`Row ${i + 2}: ${err.message}`);
