@@ -37,9 +37,8 @@
       <q-toolbar v-if="isTransactionsRoute" class="pos-toolbar">
         <q-btn flat no-caps icon="note_add" label="New Transaction" @click="startNewFromMode" />
 
-        <q-btn-toggle v-model="posDraftType" no-caps unelevated toggle-color="primary" color="grey-2"
-          text-color="grey-8" :options="transactionTypeOptions" :disable="!!transactionsStore.draft.id"
-          class="pos-type-toggle" />
+        <q-btn-toggle v-model="posDraftType" no-caps unelevated toggle-color="primary" :options="transactionTypeOptions"
+          :disable="!!transactionsStore.draft.id" class="pos-type-toggle" />
         <q-btn flat no-caps icon="history" label="Recent Transactions" @click="openRecentTransactions" />
 
         <q-space />
@@ -147,6 +146,34 @@
         </q-card-actions>
       </q-card>
     </q-dialog>
+
+    <q-dialog v-model="showCloseDialog" persistent>
+      <q-card style="min-width: 440px; max-width: 92vw;">
+        <q-card-section class="text-h6">Close POS</q-card-section>
+        <q-card-section class="q-gutter-sm">
+          <q-banner v-if="closeCart.hasItems" rounded class="bg-orange-1 text-orange-10">
+            <template v-if="closeCart.isExisting">
+              You have unsaved changes to an existing {{ closeCart.label }} ({{ closeCart.count }} item(s)).
+              They cannot be saved automatically - press Cancel and save it first, or they will be lost.
+            </template>
+            <template v-else>
+              You have an unsaved {{ closeCart.label }} with {{ closeCart.count }} item(s) in the cart.
+              It will be saved as a draft.
+            </template>
+          </q-banner>
+          <div class="text-body2">
+            Your data is saved as you work. Saving now also makes a backup copy of the database
+            (the last {{ closeBackupMax }} days are kept).
+          </div>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat no-caps label="Cancel" :disable="closing" @click="showCloseDialog = false" />
+          <q-btn flat no-caps color="negative" label="Exit without backup" :disable="closing"
+            @click="confirmClose(false)" />
+          <q-btn color="primary" no-caps :label="closePrimaryLabel" :loading="closing" @click="confirmClose(true)" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </q-layout>
 </template>
 
@@ -182,6 +209,9 @@ const windowMode = computed(() => desktopStore.mode);
 const savingTransaction = ref(false);
 const showRecentTransactions = ref(false);
 const showPostSaveDialog = ref(false);
+const showCloseDialog = ref(false);
+const closing = ref(false);
+const closeBackupMax = 5;
 const lastSavedTransaction = ref(null);
 const headerHeight = ref(102);
 
@@ -425,6 +455,41 @@ function handleShortcut(actionId) {
 }
 
 let unsubscribeShortcut = null;
+let unsubscribeClose = null;
+
+// --- Close prompt ---------------------------------------------------------------
+// The main process intercepts closing the window and asks us to show this
+// prompt. "Save & Exit" saves the unsaved cart as a draft (new documents only),
+// then the main process takes the database backup and quits.
+const closeCart = computed(() => {
+  const draft = transactionsStore.draft;
+  const count = draft.lineItems?.length || 0;
+  const label = { quote: 'quotation', invoice: 'invoice', purchase_order: 'purchase order' }[draft.type] || 'document';
+  return { hasItems: count > 0, isExisting: Boolean(draft.id), count, label };
+});
+
+const closePrimaryLabel = computed(() =>
+  closeCart.value.hasItems && !closeCart.value.isExisting ? 'Save Draft & Exit' : 'Save & Exit',
+);
+
+async function confirmClose(withBackup) {
+  closing.value = true;
+  try {
+    // Only brand-new carts are auto-saved. An existing document being edited is
+    // left alone: saving it "as a draft" here would silently change its status.
+    if (withBackup && closeCart.value.hasItems && !closeCart.value.isExisting) {
+      await transactionsStore.saveDraft('draft');
+    }
+    const result = await window.appBridge.confirmClose({ backup: withBackup });
+    if (result && result.closed === false) {
+      $q.notify({ type: 'negative', message: result.error || 'The app was not closed' });
+    }
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message || 'Could not save before closing' });
+  } finally {
+    closing.value = false;
+  }
+}
 
 /**
  * Enter saves the current transaction - but only when that's unambiguous:
@@ -628,9 +693,16 @@ onMounted(() => {
     unsubscribeShortcut = window.appBridge.onShortcut(handleShortcut);
   }
   window.addEventListener('keydown', onGlobalKeydown);
+
+  if (window.appBridge?.onCloseRequested) {
+    unsubscribeClose = window.appBridge.onCloseRequested(() => {
+      showCloseDialog.value = true;
+    });
+  }
 });
 
 onBeforeUnmount(() => {
+  if (unsubscribeClose) unsubscribeClose();
   stopDrag();
   if (resizeObserver) resizeObserver.disconnect();
   if (unsubscribeShortcut) unsubscribeShortcut();

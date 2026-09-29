@@ -1,4 +1,5 @@
 import {
+  docDate,
   itemsRows,
   paginateTransactionItems,
   ITEMS_PER_PAGE,
@@ -37,7 +38,7 @@ export function renderClassic(tx, company) {
     .ref { display: block; font-size: calc(10.5px * var(--print-font-scale)); color: var(--ink-soft); margin-top: 4px; }
 
     table.main-table { width: 100%; border-collapse: collapse; font-size: calc(11px * var(--print-font-scale)); margin-top: 8px; }
-    .main-table th { background: var(--accent); color: #fff; font-family: "Courier New", monospace; font-size: calc(9px * var(--print-font-scale)); letter-spacing: .06em; text-transform: uppercase; text-align: left; padding: 7px 8px; font-weight: var(--print-font-weight-semibold); border: none; }
+    .main-table th { background: var(--accent-fill); color: var(--on-accent); font-family: "Courier New", monospace; font-size: calc(9px * var(--print-font-scale)); letter-spacing: .06em; text-transform: uppercase; text-align: left; padding: 7px 8px; font-weight: var(--print-font-weight-semibold); border: none; border-bottom: var(--fill-rule); }
     .main-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
     .main-table tbody tr:nth-child(even) { background: var(--wash); }
     .notes { margin-top: 16px; font-size: calc(11px * var(--print-font-scale)); color: var(--ink-soft); }
@@ -60,7 +61,7 @@ export function renderClassic(tx, company) {
           <div class="meta-right">
             <span class="doc-title">${docLabel}</span>
             <div class="doc-number">No. <strong>${tx.number}</strong></div>
-            <div class="doc-date">Date: <strong>${new Date(tx.issued_at || tx.created_at).toLocaleDateString()}</strong></div>
+            <div class="doc-date">Date: <strong>${docDate(tx, company)}</strong></div>
             ${tx.manual_reference ? `<span class="ref">Reference: ${tx.manual_reference}</span>` : ''}
             ${tx.reference_quotation_number ? `<span class="ref">Ref. Quotation: ${tx.reference_quotation_number}</span>` : ''}
             <span class="ref">${renderPageIndicator(pageIndex + 1, totalPages)}</span>

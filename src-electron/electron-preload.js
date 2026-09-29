@@ -38,6 +38,31 @@ contextBridge.exposeInMainWorld('appBridge', {
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
   updateBranding: (payload) => ipcRenderer.invoke('app:updateBranding', toPlain(payload)),
   updateShortcuts: (map) => ipcRenderer.invoke('app:updateShortcuts', toPlain(map)),
+  /**
+   * callback() fires when the user tries to close the app. Acknowledges to the
+   * main process immediately (so it knows a prompt is being shown), then calls
+   * the callback. Returns an unsubscribe function.
+   */
+  onCloseRequested: (callback) => {
+    const listener = () => {
+      ipcRenderer.send('app:close-ack');
+      callback();
+    };
+    ipcRenderer.on('app:close-requested', listener);
+    ipcRenderer.send('app:close-handler-ready', true);
+    return () => {
+      ipcRenderer.removeListener('app:close-requested', listener);
+      ipcRenderer.send('app:close-handler-ready', false);
+    };
+  },
+  /** options: { backup: boolean }. Resolves { closed: false } only if a failed backup was declined. */
+  confirmClose: (options) => ipcRenderer.invoke('app:confirmClose', toPlain(options)),
+  backups: {
+    list: () => ipcRenderer.invoke('backup:list'),
+    create: () => ipcRenderer.invoke('backup:create'),
+    openFolder: () => ipcRenderer.invoke('backup:openFolder'),
+    restore: (fileName) => ipcRenderer.invoke('backup:restore', toPlain({ fileName })),
+  },
   /** callback(actionId) fires whenever a mapped Ctrl/Shift+digit combo is pressed anywhere in the window. Returns an unsubscribe function. */
   onShortcut: (callback) => {
     const listener = (_event, actionId) => callback(actionId);

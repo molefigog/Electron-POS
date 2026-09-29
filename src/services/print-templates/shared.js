@@ -1,3 +1,92 @@
+/**
+ * Print date formats offered in Settings. 'system' keeps the old behaviour
+ * (the computer's locale); the rest are fixed so documents look the same on
+ * every PC.
+ */
+export const PRINT_DATE_FORMATS = [
+  { value: 'system', label: 'System default' },
+  { value: 'MM/DD/YYYY', label: '09/28/2026  (MM/DD/YYYY)' },
+  { value: 'DD/MM/YYYY', label: '28/09/2026  (DD/MM/YYYY)' },
+  { value: 'DD/MM/YY', label: '28/09/26  (DD/MM/YY)' },
+  { value: 'DD MMM YYYY', label: '28 Sep 2026  (DD MMM YYYY)' },
+  { value: 'YYYY-MM-DD', label: '2026-09-28  (YYYY-MM-DD)' },
+]
+
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+function parsePrintDate(value) {
+  if (value === null || value === undefined || value === '') return null
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value
+  const text = String(value).trim()
+  // Date-only strings ('2026-09-28', what the date picker saves) are read as
+  // LOCAL dates; new Date('2026-09-28') would be UTC and can show the previous day.
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text)
+  const d = dateOnly ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3])) : new Date(text)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+export function formatPrintDate(value, format = 'system') {
+  const d = parsePrintDate(value)
+  if (!d) return ''
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const yyyy = String(d.getFullYear())
+  switch (format) {
+    case 'MM/DD/YYYY':
+      return `${mm}/${dd}/${yyyy}`
+    case 'DD/MM/YYYY':
+      return `${dd}/${mm}/${yyyy}`
+    case 'DD/MM/YY':
+      return `${dd}/${mm}/${yyyy.slice(-2)}`
+    case 'DD MMM YYYY':
+      return `${dd} ${MONTHS_SHORT[d.getMonth()]} ${yyyy}`
+    case 'YYYY-MM-DD':
+      return `${yyyy}-${mm}-${dd}`
+    default:
+      return d.toLocaleDateString()
+  }
+}
+
+/** Convenience for templates: the document date in the user's chosen format. */
+export function docDate(tx, company = {}) {
+  return formatPrintDate(tx?.issued_at || tx?.created_at, company.print_date_format)
+}
+
+function hexToRgb(hex) {
+  const h = String(hex).replace('#', '')
+  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h
+  return [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16))
+}
+
+function rgbToHex(rgb) {
+  return `#${rgb.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`
+}
+
+/** Blend `hex` toward white: amount 1 = original colour, 0 = white paper (no toner). */
+function tintTowardWhite(hex, amount) {
+  return rgbToHex(hexToRgb(hex).map((v) => 255 - (255 - v) * amount))
+}
+
+function luminance(hex) {
+  const [r, g, b] = hexToRgb(hex).map((v) => {
+    const c = v / 255
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/**
+ * Colour intensity for filled areas, 20-100 (%). Blank / missing = 100, i.e.
+ * unchanged. Note Number('') is 0, so blanks are handled before clamping.
+ */
+export function resolveColorIntensity(company = {}) {
+  const raw = company.print_color_intensity
+  if (raw === undefined || raw === null || String(raw).trim() === '') return 100
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return 100
+  return Math.min(100, Math.max(20, Math.round(n)))
+}
+
 export function money(amount, symbol = 'M') {
   if (amount === null || amount === undefined || amount === '') return '-'
   const n = Number(amount || 0)
@@ -84,8 +173,21 @@ function resolvePrintTypography(company = {}) {
 export function baseShellCss(style, company = {}) {
   const p = paletteFor(style)
   const t = resolvePrintTypography(company)
+
+  // Toner saver: at <100% the big solid-colour areas (top bar, table header,
+  // grand-total bar, logo badge) print as a pale tint of the accent with dark
+  // text and a thin accent outline, instead of a full-ink block with white text.
+  const intensity = resolveColorIntensity(company)
+  const saving = intensity < 100
+  const fill = saving ? tintTowardWhite(p.accent, intensity / 100) : p.accent
+  const onFill = saving && luminance(fill) > 0.35 ? p.ink : '#fff'
+  const fillRule = saving ? `2px solid ${p.accent}` : 'none'
+
   return `
     :root {
+      --accent-fill: ${fill};
+      --on-accent: ${onFill};
+      --fill-rule: ${fillRule};
       --ink: ${p.ink};
       --ink-soft: ${p.inkSoft};
       --line: ${p.line};
@@ -109,7 +211,7 @@ export function baseShellCss(style, company = {}) {
       background: #fff;
     }
     .sheet { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 14mm 15mm 12mm; position: relative; display: flex; flex-direction: column; }
-    .sheet::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 5mm; background: var(--accent); }
+    .sheet::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 5mm; background: var(--accent-fill); }
     .content { position: relative; z-index: 1; }
     .page-header,
     .page-footer { display: block; }
@@ -293,7 +395,7 @@ export const LETTERHEAD_FOOTER_CSS = `
   .letterhead { display: flex; align-items: stretch; gap: 16px; padding-bottom: 12px; border-bottom: 2px solid var(--accent); margin-bottom: 16px; }
   .letterhead-logo { width: 102px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border-right: 1px solid var(--line); padding-right: 12px; }
   .letterhead-logo .brand-logo-img { max-width: 100%; max-height: 82px; object-fit: contain; }
-  .letterhead-logo .brand-logo-fallback { width: 68px; height: 68px; border-radius: 8px; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: var(--print-font-weight-bold); font-size: calc(20px * var(--print-font-scale)); }
+  .letterhead-logo .brand-logo-fallback { width: 68px; height: 68px; border-radius: 8px; background: var(--accent-fill); color: var(--on-accent); box-shadow: inset 0 0 0 1.5px var(--accent); display: flex; align-items: center; justify-content: center; font-weight: var(--print-font-weight-bold); font-size: calc(20px * var(--print-font-scale)); }
   .letterhead-info { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
   .letterhead-info .company-name { font-family: "Palatino Linotype", "Book Antiqua", Palatino, serif; font-size: calc(22px * var(--print-font-scale)); font-weight: var(--print-font-weight-bold); letter-spacing: .04em; text-transform: uppercase; color: var(--ink); margin-bottom: 6px; }
   .letterhead-info .company-details { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 18px; font-size: calc(10.5px * var(--print-font-scale)); color: var(--ink-soft); }
@@ -315,8 +417,8 @@ export const LETTERHEAD_FOOTER_CSS = `
   .totals-block { text-align: right; }
   .totals-row { display: flex; justify-content: space-between; font-size: calc(11px * var(--print-font-scale)); padding: 3px 0; color: var(--ink-soft); }
   .totals-row .value { font-family: "Courier New", monospace; font-weight: var(--print-font-weight-semibold); color: var(--ink); }
-  .totals-row.grand { margin-top: 5px; background: var(--accent); color: #fff; border-radius: 5px; padding: 8px 10px; font-size: calc(13px * var(--print-font-scale)); font-weight: var(--print-font-weight-bold); }
-  .totals-row.grand .label, .totals-row.grand .value { color: #fff; font-weight: var(--print-font-weight-bold); }
+  .totals-row.grand { margin-top: 5px; background: var(--accent-fill); color: var(--on-accent); box-shadow: inset 0 0 0 1.5px var(--accent); border-radius: 5px; padding: 8px 10px; font-size: calc(13px * var(--print-font-scale)); font-weight: var(--print-font-weight-bold); }
+  .totals-row.grand .label, .totals-row.grand .value { color: var(--on-accent); font-weight: var(--print-font-weight-bold); }
   .footer-note { margin-top: 12px; font-size: calc(10.5px * var(--print-font-scale)); color: var(--ink-soft); font-style: italic; text-align: center; }
 
   .label { font-family: "Courier New", monospace; font-size: calc(9px * var(--print-font-scale)); letter-spacing: .1em; text-transform: uppercase; color: var(--accent); font-weight: var(--print-font-weight-bold); }

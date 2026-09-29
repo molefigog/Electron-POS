@@ -1,21 +1,20 @@
 import {
+  formatPrintDate,
   baseShellCss,
   LETTERHEAD_FOOTER_CSS,
   renderLetterhead,
   money,
 } from './shared';
 
-function formatDate(value) {
+function formatDate(value, dateFormat) {
   if (!value) return 'All dates';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleDateString();
+  return formatPrintDate(value, dateFormat) || String(value);
 }
 
-function formatDateTime(value) {
+function formatDateTime(value, dateFormat) {
   const date = value ? new Date(value) : new Date();
   if (Number.isNaN(date.getTime())) return '';
-  return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
+  return `${formatPrintDate(date, dateFormat)} ${date.toLocaleTimeString()}`;
 }
 
 function valueOrDash(value) {
@@ -34,7 +33,7 @@ export function renderReportDocument(report, company, style = 'classic') {
   const tableRows = rows
     .map((row) => {
       const issued = new Date(row.created_at);
-      const dateLabel = Number.isNaN(issued.getTime()) ? '-' : issued.toLocaleDateString();
+      const dateLabel = Number.isNaN(issued.getTime()) ? '-' : formatPrintDate(issued, company?.print_date_format);
       return `
         <tr>
           <td>${valueOrDash(row.number)}</td>
@@ -80,15 +79,15 @@ export function renderReportDocument(report, company, style = 'classic') {
         <div class="report-meta">
           <div class="meta-card">
             <div class="meta-label">Date From</div>
-            <div class="meta-value">${formatDate(report?.from)}</div>
+            <div class="meta-value">${formatDate(report?.from, company?.print_date_format)}</div>
           </div>
           <div class="meta-card">
             <div class="meta-label">Date To</div>
-            <div class="meta-value">${formatDate(report?.to)}</div>
+            <div class="meta-value">${formatDate(report?.to, company?.print_date_format)}</div>
           </div>
           <div class="meta-card">
             <div class="meta-label">Generated</div>
-            <div class="meta-value">${formatDateTime(report?.generatedAt)}</div>
+            <div class="meta-value">${formatDateTime(report?.generatedAt, company?.print_date_format)}</div>
           </div>
         </div>
 

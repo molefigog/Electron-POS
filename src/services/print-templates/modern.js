@@ -1,4 +1,5 @@
 import {
+  docDate,
   itemsRows,
   paginateTransactionItems,
   ITEMS_PER_PAGE,
@@ -54,7 +55,7 @@ export function renderModern(tx, company) {
           <span class="doc-title">${docLabel}</span>
           <div class="doc-meta">
             No. <strong>${tx.number}</strong><br>
-            ${new Date(tx.issued_at || tx.created_at).toLocaleDateString()}
+            ${docDate(tx, company)}
             ${tx.manual_reference ? `<span class="ref">Ref: ${tx.manual_reference}</span>` : ''}
             ${tx.reference_quotation_number ? `<span class="ref">from ${tx.reference_quotation_number}</span>` : ''}
             <span class="ref">${renderPageIndicator(pageIndex + 1, totalPages)}</span>

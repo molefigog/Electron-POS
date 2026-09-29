@@ -26,7 +26,7 @@
       <template #body-cell-stock_qty="props">
         <q-td :props="props">
           <q-badge :color="props.row.stock_qty <= props.row.reorder_level ? 'negative' : 'positive'">{{ props.value
-          }}</q-badge>
+            }}</q-badge>
         </q-td>
       </template>
       <template #body-cell-actions="props">
@@ -40,11 +40,14 @@
     <q-dialog v-model="showForm">
       <q-card style="min-width: 480px">
         <q-card-section class="text-h6">{{ form.id ? 'Edit' : 'New' }} Product</q-card-section>
-        <q-card-section class="q-gutter-sm">
+        <q-card-section class="q-gutter-y-md">
           <q-input v-model="form.name" label="Name *" filled />
           <div class="row q-col-gutter-sm">
-            <div class="col-6"><q-input v-model="form.sku" label="SKU" filled /></div>
-            <div class="col-6"><q-input v-model="form.barcode" label="Barcode" filled /></div>
+            <div class="col-6"><q-input v-model="form.sku" label="SKU" filled hint="Initials. eg 'White Melamine' WM" />
+            </div>
+            <div class="col-6"><q-input v-model="form.barcode" label="Barcode" filled
+                hint="eg 'Part No. or Item Code'" />
+            </div>
           </div>
           <div class="row q-col-gutter-sm">
             <div class="col-6"><q-input v-model.number="form.cost_price" type="number" label="Cost Price" filled />
@@ -59,10 +62,10 @@
             </div>
             <div class="col-6">
               <q-select v-model="form.category_id" :options="categoryOptions" emit-value map-options label="Category"
-                filled clearable />
+                filled clearable hint="Optional"/>
             </div>
           </div>
-          <q-select v-model="form.tax_id" :options="taxOptions" emit-value map-options label="Tax" filled clearable />
+          <q-select v-model="form.tax_id" :options="taxOptions" emit-value map-options label="Tax" filled clearable hint="Optional"/>
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Cancel" v-close-popup />

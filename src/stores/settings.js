@@ -27,6 +27,8 @@ const DEFAULT_SETTINGS = {
   default_tax_rate: '0',
   print_font_size: '12',
   print_font_weight: '400',
+  print_date_format: 'system',
+  print_color_intensity: '100',
   items_per_page: '18',
   default_printer: '',
   silent_printing: 'false',

@@ -1,0 +1,356 @@
+diff --git a/src/pages/SettingsPage.vue b/src/pages/SettingsPage.vue
+index b75b63d..329f9e9 100644
+--- a/src/pages/SettingsPage.vue
++++ b/src/pages/SettingsPage.vue
+@@ -147,6 +147,21 @@
+           </div>
+         </div>
+ 
++        <div class="row q-col-gutter-md items-start settings-grid-row">
++          <div class="col-12 col-md-4">
++            <q-select v-model="form.print_date_format" :options="dateFormatOptions" emit-value map-options filled
++              label="Date Format" hint="How dates appear on quotations, invoices, purchase orders and reports" />
++          </div>
++          <div class="col-12 col-md-8">
++            <div class="text-caption text-grey">Colour Intensity (toner saver): {{ form.print_color_intensity }}%</div>
++            <q-slider v-model="form.print_color_intensity" :min="20" :max="100" :step="5" label color="primary" />
++            <div class="text-caption text-grey">
++              100% = full colour. Lower values print the top bar, table header and Total bar as a pale tint with an
++              outline and dark text, which uses much less toner.
++            </div>
++          </div>
++        </div>
++
+         <div class="row q-col-gutter-md items-end settings-grid-row">
+           <div class="col-12">
+             <q-select v-model="form.default_printer" :options="printerOptions" emit-value map-options filled clearable
+@@ -235,6 +250,7 @@
+ <script setup>
+ import { ref, reactive, computed, onMounted } from 'vue';
+ import { useQuasar } from 'quasar';
++import { PRINT_DATE_FORMATS } from 'src/services/print-templates/shared';
+ import { useSettingsStore } from 'src/stores/settings';
+ import { apiClient } from 'src/services/api-client';
+ import { clearSession, connectionState, setConnectionSettings } from 'src/services/connection';
+@@ -262,6 +278,8 @@ const fontWeightOptions = [
+   { label: 'Extra-bold (800)', value: 800 },
+ ];
+ 
++const dateFormatOptions = PRINT_DATE_FORMATS.map((f) => ({ label: f.label, value: f.value }));
++
+ const form = reactive({
+   company_name: '',
+   company_address: '',
+@@ -288,6 +306,8 @@ const form = reactive({
+   default_tax_rate: 0,
+   print_font_size: 12,
+   print_font_weight: 400,
++  print_date_format: 'system',
++  print_color_intensity: 100,
+   default_printer: '',
+   silent_printing: false,
+   theme_mode: 'system',
+@@ -412,6 +432,8 @@ async function save() {
+       default_tax_rate: String(form.default_tax_rate),
+       print_font_size: String(form.print_font_size),
+       print_font_weight: String(form.print_font_weight),
++      print_date_format: form.print_date_format || 'system',
++      print_color_intensity: String(form.print_color_intensity),
+       items_per_page: String(form.items_per_page),
+       default_printer: form.default_printer || '',
+       silent_printing: String(!!form.silent_printing),
+@@ -456,6 +478,8 @@ onMounted(async () => {
+   form.default_tax_rate = Number(settingsStore.values.default_tax_rate || 0);
+   form.print_font_size = Number(settingsStore.values.print_font_size || 12);
+   form.print_font_weight = Number(settingsStore.values.print_font_weight || 400);
++  form.print_date_format = settingsStore.values.print_date_format || 'system';
++  form.print_color_intensity = Number(settingsStore.values.print_color_intensity || 100);
+   form.items_per_page = Number(settingsStore.values.items_per_page || 18);
+   form.silent_printing = String(settingsStore.values.silent_printing || 'false') === 'true';
+   form.show_signature_block = String(settingsStore.values.show_signature_block || 'false') === 'true';
+diff --git a/src/services/print-templates/classic.js b/src/services/print-templates/classic.js
+index 20531ad..34d174d 100644
+--- a/src/services/print-templates/classic.js
++++ b/src/services/print-templates/classic.js
+@@ -1,4 +1,5 @@
+ import {
++  docDate,
+   itemsRows,
+   paginateTransactionItems,
+   ITEMS_PER_PAGE,
+@@ -37,7 +38,7 @@ export function renderClassic(tx, company) {
+     .ref { display: block; font-size: calc(10.5px * var(--print-font-scale)); color: var(--ink-soft); margin-top: 4px; }
+ 
+     table.main-table { width: 100%; border-collapse: collapse; font-size: calc(11px * var(--print-font-scale)); margin-top: 8px; }
+-    .main-table th { background: var(--accent); color: #fff; font-family: "Courier New", monospace; font-size: calc(9px * var(--print-font-scale)); letter-spacing: .06em; text-transform: uppercase; text-align: left; padding: 7px 8px; font-weight: var(--print-font-weight-semibold); border: none; }
++    .main-table th { background: var(--accent-fill); color: var(--on-accent); font-family: "Courier New", monospace; font-size: calc(9px * var(--print-font-scale)); letter-spacing: .06em; text-transform: uppercase; text-align: left; padding: 7px 8px; font-weight: var(--print-font-weight-semibold); border: none; border-bottom: var(--fill-rule); }
+     .main-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
+     .main-table tbody tr:nth-child(even) { background: var(--wash); }
+     .notes { margin-top: 16px; font-size: calc(11px * var(--print-font-scale)); color: var(--ink-soft); }
+@@ -60,7 +61,7 @@ export function renderClassic(tx, company) {
+           <div class="meta-right">
+             <span class="doc-title">${docLabel}</span>
+             <div class="doc-number">No. <strong>${tx.number}</strong></div>
+-            <div class="doc-date">Date: <strong>${new Date(tx.issued_at || tx.created_at).toLocaleDateString()}</strong></div>
++            <div class="doc-date">Date: <strong>${docDate(tx, company)}</strong></div>
+             ${tx.manual_reference ? `<span class="ref">Reference: ${tx.manual_reference}</span>` : ''}
+             ${tx.reference_quotation_number ? `<span class="ref">Ref. Quotation: ${tx.reference_quotation_number}</span>` : ''}
+             <span class="ref">${renderPageIndicator(pageIndex + 1, totalPages)}</span>
+diff --git a/src/services/print-templates/minimal.js b/src/services/print-templates/minimal.js
+index b94575e..51cdda0 100644
+--- a/src/services/print-templates/minimal.js
++++ b/src/services/print-templates/minimal.js
+@@ -1,4 +1,5 @@
+ import {
++  docDate,
+   money,
+   paginateTransactionItems,
+   ITEMS_PER_PAGE,
+@@ -46,7 +47,7 @@ export function renderMinimal(tx, company) {
+ 
+         <div class="doc-line">
+           <span class="title">${docLabel} #${tx.number}</span>
+-          <span>${new Date(tx.issued_at || tx.created_at).toLocaleDateString()}</span>
++          <span>${docDate(tx, company)}</span>
+         </div>
+         <div class="bill-to">
+           ${partyLabel}: ${partyName || (tx.type === 'purchase_order' ? 'Supplier not selected' : 'Walk-in Customer')}${tx.manual_reference ? `  |  Ref: ${tx.manual_reference}` : ''}${tx.reference_quotation_number ? `  |  Quote: ${tx.reference_quotation_number}` : ''}
+diff --git a/src/services/print-templates/modern.js b/src/services/print-templates/modern.js
+index e63224d..e33a697 100644
+--- a/src/services/print-templates/modern.js
++++ b/src/services/print-templates/modern.js
+@@ -1,4 +1,5 @@
+ import {
++  docDate,
+   itemsRows,
+   paginateTransactionItems,
+   ITEMS_PER_PAGE,
+@@ -54,7 +55,7 @@ export function renderModern(tx, company) {
+           <span class="doc-title">${docLabel}</span>
+           <div class="doc-meta">
+             No. <strong>${tx.number}</strong><br>
+-            ${new Date(tx.issued_at || tx.created_at).toLocaleDateString()}
++            ${docDate(tx, company)}
+             ${tx.manual_reference ? `<span class="ref">Ref: ${tx.manual_reference}</span>` : ''}
+             ${tx.reference_quotation_number ? `<span class="ref">from ${tx.reference_quotation_number}</span>` : ''}
+             <span class="ref">${renderPageIndicator(pageIndex + 1, totalPages)}</span>
+diff --git a/src/services/print-templates/report.js b/src/services/print-templates/report.js
+index 2367f92..1e49336 100644
+--- a/src/services/print-templates/report.js
++++ b/src/services/print-templates/report.js
+@@ -1,21 +1,20 @@
+ import {
++  formatPrintDate,
+   baseShellCss,
+   LETTERHEAD_FOOTER_CSS,
+   renderLetterhead,
+   money,
+ } from './shared';
+ 
+-function formatDate(value) {
++function formatDate(value, dateFormat) {
+   if (!value) return 'All dates';
+-  const date = new Date(value);
+-  if (Number.isNaN(date.getTime())) return String(value);
+-  return date.toLocaleDateString();
++  return formatPrintDate(value, dateFormat) || String(value);
+ }
+ 
+-function formatDateTime(value) {
++function formatDateTime(value, dateFormat) {
+   const date = value ? new Date(value) : new Date();
+   if (Number.isNaN(date.getTime())) return '';
+-  return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
++  return `${formatPrintDate(date, dateFormat)} ${date.toLocaleTimeString()}`;
+ }
+ 
+ function valueOrDash(value) {
+@@ -34,7 +33,7 @@ export function renderReportDocument(report, company, style = 'classic') {
+   const tableRows = rows
+     .map((row) => {
+       const issued = new Date(row.created_at);
+-      const dateLabel = Number.isNaN(issued.getTime()) ? '-' : issued.toLocaleDateString();
++      const dateLabel = Number.isNaN(issued.getTime()) ? '-' : formatPrintDate(issued, company?.print_date_format);
+       return `
+         <tr>
+           <td>${valueOrDash(row.number)}</td>
+@@ -80,15 +79,15 @@ export function renderReportDocument(report, company, style = 'classic') {
+         <div class="report-meta">
+           <div class="meta-card">
+             <div class="meta-label">Date From</div>
+-            <div class="meta-value">${formatDate(report?.from)}</div>
++            <div class="meta-value">${formatDate(report?.from, company?.print_date_format)}</div>
+           </div>
+           <div class="meta-card">
+             <div class="meta-label">Date To</div>
+-            <div class="meta-value">${formatDate(report?.to)}</div>
++            <div class="meta-value">${formatDate(report?.to, company?.print_date_format)}</div>
+           </div>
+           <div class="meta-card">
+             <div class="meta-label">Generated</div>
+-            <div class="meta-value">${formatDateTime(report?.generatedAt)}</div>
++            <div class="meta-value">${formatDateTime(report?.generatedAt, company?.print_date_format)}</div>
+           </div>
+         </div>
+ 
+diff --git a/src/services/print-templates/shared.js b/src/services/print-templates/shared.js
+index dba5d07..93b1d58 100644
+--- a/src/services/print-templates/shared.js
++++ b/src/services/print-templates/shared.js
+@@ -1,3 +1,92 @@
++/**
++ * Print date formats offered in Settings. 'system' keeps the old behaviour
++ * (the computer's locale); the rest are fixed so documents look the same on
++ * every PC.
++ */
++export const PRINT_DATE_FORMATS = [
++  { value: 'system', label: 'System default' },
++  { value: 'MM/DD/YYYY', label: '09/28/2026  (MM/DD/YYYY)' },
++  { value: 'DD/MM/YYYY', label: '28/09/2026  (DD/MM/YYYY)' },
++  { value: 'DD/MM/YY', label: '28/09/26  (DD/MM/YY)' },
++  { value: 'DD MMM YYYY', label: '28 Sep 2026  (DD MMM YYYY)' },
++  { value: 'YYYY-MM-DD', label: '2026-09-28  (YYYY-MM-DD)' },
++]
++
++const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
++
++function parsePrintDate(value) {
++  if (value === null || value === undefined || value === '') return null
++  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value
++  const text = String(value).trim()
++  // Date-only strings ('2026-09-28', what the date picker saves) are read as
++  // LOCAL dates; new Date('2026-09-28') would be UTC and can show the previous day.
++  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text)
++  const d = dateOnly ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3])) : new Date(text)
++  return Number.isNaN(d.getTime()) ? null : d
++}
++
++export function formatPrintDate(value, format = 'system') {
++  const d = parsePrintDate(value)
++  if (!d) return ''
++  const dd = String(d.getDate()).padStart(2, '0')
++  const mm = String(d.getMonth() + 1).padStart(2, '0')
++  const yyyy = String(d.getFullYear())
++  switch (format) {
++    case 'MM/DD/YYYY':
++      return `${mm}/${dd}/${yyyy}`
++    case 'DD/MM/YYYY':
++      return `${dd}/${mm}/${yyyy}`
++    case 'DD/MM/YY':
++      return `${dd}/${mm}/${yyyy.slice(-2)}`
++    case 'DD MMM YYYY':
++      return `${dd} ${MONTHS_SHORT[d.getMonth()]} ${yyyy}`
++    case 'YYYY-MM-DD':
++      return `${yyyy}-${mm}-${dd}`
++    default:
++      return d.toLocaleDateString()
++  }
++}
++
++/** Convenience for templates: the document date in the user's chosen format. */
++export function docDate(tx, company = {}) {
++  return formatPrintDate(tx?.issued_at || tx?.created_at, company.print_date_format)
++}
++
++function hexToRgb(hex) {
++  const h = String(hex).replace('#', '')
++  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h
++  return [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16))
++}
++
++function rgbToHex(rgb) {
++  return `#${rgb.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`
++}
++
++/** Blend `hex` toward white: amount 1 = original colour, 0 = white paper (no toner). */
++function tintTowardWhite(hex, amount) {
++  return rgbToHex(hexToRgb(hex).map((v) => 255 - (255 - v) * amount))
++}
++
++function luminance(hex) {
++  const [r, g, b] = hexToRgb(hex).map((v) => {
++    const c = v / 255
++    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
++  })
++  return 0.2126 * r + 0.7152 * g + 0.0722 * b
++}
++
++/**
++ * Colour intensity for filled areas, 20-100 (%). Blank / missing = 100, i.e.
++ * unchanged. Note Number('') is 0, so blanks are handled before clamping.
++ */
++export function resolveColorIntensity(company = {}) {
++  const raw = company.print_color_intensity
++  if (raw === undefined || raw === null || String(raw).trim() === '') return 100
++  const n = Number(raw)
++  if (!Number.isFinite(n)) return 100
++  return Math.min(100, Math.max(20, Math.round(n)))
++}
++
+ export function money(amount, symbol = 'M') {
+   if (amount === null || amount === undefined || amount === '') return '-'
+   const n = Number(amount || 0)
+@@ -84,8 +173,21 @@ function resolvePrintTypography(company = {}) {
+ export function baseShellCss(style, company = {}) {
+   const p = paletteFor(style)
+   const t = resolvePrintTypography(company)
++
++  // Toner saver: at <100% the big solid-colour areas (top bar, table header,
++  // grand-total bar, logo badge) print as a pale tint of the accent with dark
++  // text and a thin accent outline, instead of a full-ink block with white text.
++  const intensity = resolveColorIntensity(company)
++  const saving = intensity < 100
++  const fill = saving ? tintTowardWhite(p.accent, intensity / 100) : p.accent
++  const onFill = saving && luminance(fill) > 0.35 ? p.ink : '#fff'
++  const fillRule = saving ? `2px solid ${p.accent}` : 'none'
++
+   return `
+     :root {
++      --accent-fill: ${fill};
++      --on-accent: ${onFill};
++      --fill-rule: ${fillRule};
+       --ink: ${p.ink};
+       --ink-soft: ${p.inkSoft};
+       --line: ${p.line};
+@@ -109,7 +211,7 @@ export function baseShellCss(style, company = {}) {
+       background: #fff;
+     }
+     .sheet { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 14mm 15mm 12mm; position: relative; display: flex; flex-direction: column; }
+-    .sheet::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 5mm; background: var(--accent); }
++    .sheet::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 5mm; background: var(--accent-fill); }
+     .content { position: relative; z-index: 1; }
+     .page-header,
+     .page-footer { display: block; }
+@@ -293,7 +395,7 @@ export const LETTERHEAD_FOOTER_CSS = `
+   .letterhead { display: flex; align-items: stretch; gap: 16px; padding-bottom: 12px; border-bottom: 2px solid var(--accent); margin-bottom: 16px; }
+   .letterhead-logo { width: 102px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border-right: 1px solid var(--line); padding-right: 12px; }
+   .letterhead-logo .brand-logo-img { max-width: 100%; max-height: 82px; object-fit: contain; }
+-  .letterhead-logo .brand-logo-fallback { width: 68px; height: 68px; border-radius: 8px; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: var(--print-font-weight-bold); font-size: calc(20px * var(--print-font-scale)); }
++  .letterhead-logo .brand-logo-fallback { width: 68px; height: 68px; border-radius: 8px; background: var(--accent-fill); color: var(--on-accent); box-shadow: inset 0 0 0 1.5px var(--accent); display: flex; align-items: center; justify-content: center; font-weight: var(--print-font-weight-bold); font-size: calc(20px * var(--print-font-scale)); }
+   .letterhead-info { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
+   .letterhead-info .company-name { font-family: "Palatino Linotype", "Book Antiqua", Palatino, serif; font-size: calc(22px * var(--print-font-scale)); font-weight: var(--print-font-weight-bold); letter-spacing: .04em; text-transform: uppercase; color: var(--ink); margin-bottom: 6px; }
+   .letterhead-info .company-details { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 18px; font-size: calc(10.5px * var(--print-font-scale)); color: var(--ink-soft); }
+@@ -315,8 +417,8 @@ export const LETTERHEAD_FOOTER_CSS = `
+   .totals-block { text-align: right; }
+   .totals-row { display: flex; justify-content: space-between; font-size: calc(11px * var(--print-font-scale)); padding: 3px 0; color: var(--ink-soft); }
+   .totals-row .value { font-family: "Courier New", monospace; font-weight: var(--print-font-weight-semibold); color: var(--ink); }
+-  .totals-row.grand { margin-top: 5px; background: var(--accent); color: #fff; border-radius: 5px; padding: 8px 10px; font-size: calc(13px * var(--print-font-scale)); font-weight: var(--print-font-weight-bold); }
+-  .totals-row.grand .label, .totals-row.grand .value { color: #fff; font-weight: var(--print-font-weight-bold); }
++  .totals-row.grand { margin-top: 5px; background: var(--accent-fill); color: var(--on-accent); box-shadow: inset 0 0 0 1.5px var(--accent); border-radius: 5px; padding: 8px 10px; font-size: calc(13px * var(--print-font-scale)); font-weight: var(--print-font-weight-bold); }
++  .totals-row.grand .label, .totals-row.grand .value { color: var(--on-accent); font-weight: var(--print-font-weight-bold); }
+   .footer-note { margin-top: 12px; font-size: calc(10.5px * var(--print-font-scale)); color: var(--ink-soft); font-style: italic; text-align: center; }
+ 
+   .label { font-family: "Courier New", monospace; font-size: calc(9px * var(--print-font-scale)); letter-spacing: .1em; text-transform: uppercase; color: var(--accent); font-weight: var(--print-font-weight-bold); }
+diff --git a/src/stores/settings.js b/src/stores/settings.js
+index 7dae2fe..40c4969 100644
+--- a/src/stores/settings.js
++++ b/src/stores/settings.js
+@@ -27,6 +27,8 @@ const DEFAULT_SETTINGS = {
+   default_tax_rate: '0',
+   print_font_size: '12',
+   print_font_weight: '400',
++  print_date_format: 'system',
++  print_color_intensity: '100',
+   items_per_page: '18',
+   default_printer: '',
+   silent_printing: 'false',

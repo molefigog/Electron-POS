@@ -49,7 +49,7 @@
 
     <q-card flat bordered class="q-mb-md">
       <q-card-section class="text-subtitle1">Company Information</q-card-section>
-      <q-card-section class="q-gutter-sm">
+      <q-card-section class="q-gutter-y-md">
         <q-input v-model="form.company_name" label="Company Name" filled />
         <q-input v-model="form.company_address" label="Address" filled type="textarea" autogrow />
         <div class="row q-col-gutter-sm">
@@ -147,6 +147,21 @@
           </div>
         </div>
 
+        <div class="row q-col-gutter-md items-start settings-grid-row">
+          <div class="col-12 col-md-4">
+            <q-select v-model="form.print_date_format" :options="dateFormatOptions" emit-value map-options filled
+              label="Date Format" hint="How dates appear on quotations, invoices, purchase orders and reports" />
+          </div>
+          <div class="col-12 col-md-8">
+            <div class="text-caption text-grey">Colour Intensity (toner saver): {{ form.print_color_intensity }}%</div>
+            <q-slider v-model="form.print_color_intensity" :min="20" :max="100" :step="5" label color="primary" />
+            <div class="text-caption text-grey">
+              100% = full colour. Lower values print the top bar, table header and Total bar as a pale tint with an
+              outline and dark text, which uses much less toner.
+            </div>
+          </div>
+        </div>
+
         <div class="row q-col-gutter-md items-end settings-grid-row">
           <div class="col-12">
             <q-select v-model="form.default_printer" :options="printerOptions" emit-value map-options filled clearable
@@ -219,6 +234,36 @@
       </q-card-section>
     </q-card>
 
+    <q-card v-if="hasBackupBridge" flat bordered class="q-mb-md">
+      <q-card-section class="row items-center">
+        <div class="text-subtitle1 col">Database Backup &amp; Recovery</div>
+        <q-btn flat dense no-caps icon="folder_open" label="Open folder" class="q-mr-sm" @click="openBackupFolder" />
+        <q-btn color="primary" dense no-caps icon="backup" label="Back up now" :loading="backingUp"
+          @click="backUpNow" />
+      </q-card-section>
+      <q-card-section class="q-pt-none">
+        <div class="text-caption text-grey">
+          A backup is made every day when you close the POS (after you confirm the save prompt). The last
+          {{ backupInfo.max }} days are kept. If the database is ever damaged, the newest healthy backup is
+          restored automatically on the next start.
+        </div>
+        <div class="text-caption text-grey q-mt-xs">Folder: {{ backupInfo.dir || '-' }}</div>
+      </q-card-section>
+      <q-list v-if="backupInfo.backups.length" separator>
+        <q-item v-for="b in backupInfo.backups" :key="b.name">
+          <q-item-section>
+            <q-item-label>{{ b.date }}</q-item-label>
+            <q-item-label caption>{{ formatBackupSize(b.size) }} - saved {{ new Date(b.modified).toLocaleString() }}</q-item-label>
+          </q-item-section>
+          <q-item-section side>
+            <q-btn flat dense no-caps color="negative" icon="settings_backup_restore" label="Restore"
+              @click="confirmRestore(b)" />
+          </q-item-section>
+        </q-item>
+      </q-list>
+      <q-card-section v-else class="text-caption text-grey">No backups yet - press "Back up now".</q-card-section>
+    </q-card>
+
     <q-card flat bordered class="q-mb-md">
       <q-card-section class="text-subtitle1">Document Numbering</q-card-section>
       <q-card-section class="row q-col-gutter-sm">
@@ -235,6 +280,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue';
 import { useQuasar } from 'quasar';
+import { PRINT_DATE_FORMATS } from 'src/services/print-templates/shared';
 import { useSettingsStore } from 'src/stores/settings';
 import { apiClient } from 'src/services/api-client';
 import { clearSession, connectionState, setConnectionSettings } from 'src/services/connection';
@@ -246,6 +292,68 @@ import {
 const $q = useQuasar();
 const settingsStore = useSettingsStore();
 const saving = ref(false);
+
+// --- Database backups (Electron only) ---
+const hasBackupBridge = Boolean(window.appBridge?.backups);
+const backingUp = ref(false);
+const backupInfo = reactive({ dir: '', max: 5, backups: [] });
+
+function formatBackupSize(bytes) {
+  const mb = Number(bytes || 0) / (1024 * 1024);
+  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(Number(bytes || 0) / 1024))} KB`;
+}
+
+async function loadBackups() {
+  if (!hasBackupBridge) return;
+  try {
+    Object.assign(backupInfo, await window.appBridge.backups.list());
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message || 'Could not read backups' });
+  }
+}
+
+async function backUpNow() {
+  backingUp.value = true;
+  try {
+    await window.appBridge.backups.create();
+    await loadBackups();
+    $q.notify({ type: 'positive', message: 'Backup created' });
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message || 'Backup failed' });
+  } finally {
+    backingUp.value = false;
+  }
+}
+
+async function openBackupFolder() {
+  try {
+    await window.appBridge.backups.openFolder();
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message || 'Could not open the backup folder' });
+  }
+}
+
+function confirmRestore(backup) {
+  $q.dialog({
+    title: 'Restore backup?',
+    message:
+      `Replace the current database with the backup from ${backup.date}? ` +
+      'Everything entered after that will be lost (a copy of the current database is kept). ' +
+      'Any unsaved cart will be lost and the POS will restart.',
+    cancel: true,
+    persistent: true,
+    ok: { label: 'Restore', color: 'negative', noCaps: true },
+  }).onOk(async () => {
+    try {
+      const result = await window.appBridge.backups.restore(backup.name);
+      if (result && result.restarted === false) {
+        $q.notify({ type: 'info', message: 'Restored. Please start the app again.' });
+      }
+    } catch (err) {
+      $q.notify({ type: 'negative', message: err.message || 'Restore failed' });
+    }
+  });
+}
 const logoFile = ref(null);
 const stampFile = ref(null);
 const loadingPrinters = ref(false);
@@ -261,6 +369,8 @@ const fontWeightOptions = [
   { label: 'Bold (700)', value: 700 },
   { label: 'Extra-bold (800)', value: 800 },
 ];
+
+const dateFormatOptions = PRINT_DATE_FORMATS.map((f) => ({ label: f.label, value: f.value }));
 
 const form = reactive({
   company_name: '',
@@ -288,6 +398,8 @@ const form = reactive({
   default_tax_rate: 0,
   print_font_size: 12,
   print_font_weight: 400,
+  print_date_format: 'system',
+  print_color_intensity: 100,
   default_printer: '',
   silent_printing: false,
   theme_mode: 'system',
@@ -412,6 +524,8 @@ async function save() {
       default_tax_rate: String(form.default_tax_rate),
       print_font_size: String(form.print_font_size),
       print_font_weight: String(form.print_font_weight),
+      print_date_format: form.print_date_format || 'system',
+      print_color_intensity: String(form.print_color_intensity),
       items_per_page: String(form.items_per_page),
       default_printer: form.default_printer || '',
       silent_printing: String(!!form.silent_printing),
@@ -451,11 +565,14 @@ function signOut() {
 }
 
 onMounted(async () => {
+  loadBackups();
   await settingsStore.fetchAll();
   Object.assign(form, settingsStore.values);
   form.default_tax_rate = Number(settingsStore.values.default_tax_rate || 0);
   form.print_font_size = Number(settingsStore.values.print_font_size || 12);
   form.print_font_weight = Number(settingsStore.values.print_font_weight || 400);
+  form.print_date_format = settingsStore.values.print_date_format || 'system';
+  form.print_color_intensity = Number(settingsStore.values.print_color_intensity || 100);
   form.items_per_page = Number(settingsStore.values.items_per_page || 18);
   form.silent_printing = String(settingsStore.values.silent_printing || 'false') === 'true';
   form.show_signature_block = String(settingsStore.values.show_signature_block || 'false') === 'true';

@@ -1,4 +1,5 @@
 import {
+  docDate,
   money,
   paginateTransactionItems,
   ITEMS_PER_PAGE,
@@ -46,7 +47,7 @@ export function renderMinimal(tx, company) {
 
         <div class="doc-line">
           <span class="title">${docLabel} #${tx.number}</span>
-          <span>${new Date(tx.issued_at || tx.created_at).toLocaleDateString()}</span>
+          <span>${docDate(tx, company)}</span>
         </div>
         <div class="bill-to">
           ${partyLabel}: ${partyName || (tx.type === 'purchase_order' ? 'Supplier not selected' : 'Walk-in Customer')}${tx.manual_reference ? `  |  Ref: ${tx.manual_reference}` : ''}${tx.reference_quotation_number ? `  |  Quote: ${tx.reference_quotation_number}` : ''}

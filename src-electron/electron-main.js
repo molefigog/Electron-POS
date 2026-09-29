@@ -1,8 +1,9 @@
-import { app, BrowserWindow, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { initDb, getDb } from './db/connection.js';
+import { initDb, getDb, closeDb, getBackupDir, takeRecoveryNotice } from './db/connection.js';
+import { createBackup } from './db/backup.js';
 import { registerIpcHandlers } from './db/ipc-handlers.js';
 import { loadShortcutsFromDb, getShortcutMap, comboFromInput } from './shortcuts.js';
 
@@ -12,6 +13,83 @@ const platform = process.platform || os.platform();
 const currentDir = fileURLToPath(new URL('.', import.meta.url));
 
 let mainWindow;
+
+// ---- Close / backup flow -------------------------------------------------
+// Closing the window is intercepted: the renderer shows a "save your work"
+// prompt and, when the user confirms, calls app:confirmClose which takes the
+// daily backup and then really quits. If the renderer can't answer (crashed,
+// still loading, page error) we never trap the user: after 3 s without an
+// acknowledgement we back up and close anyway.
+let allowClose = false;
+let closeHandlerReady = false;
+let ackTimer = null;
+
+function backupNow() {
+  return createBackup(getDb(), getBackupDir());
+}
+
+function finishClose() {
+  allowClose = true;
+  clearTimeout(ackTimer);
+  closeDb();
+  app.quit();
+}
+
+function quitWithBackupNoPrompt() {
+  try {
+    backupNow();
+  } catch (err) {
+    console.error('[backup] backup on close failed:', err);
+  }
+  finishClose();
+}
+
+function requestClose() {
+  const wc = mainWindow?.webContents;
+  if (!wc || wc.isDestroyed() || wc.isCrashed() || !closeHandlerReady) {
+    quitWithBackupNoPrompt();
+    return;
+  }
+  clearTimeout(ackTimer);
+  ackTimer = setTimeout(quitWithBackupNoPrompt, 3000);
+  wc.send('app:close-requested');
+}
+
+function registerCloseHandlers() {
+  ipcMain.removeAllListeners('app:close-ack');
+  ipcMain.on('app:close-ack', () => clearTimeout(ackTimer));
+
+  ipcMain.removeAllListeners('app:close-handler-ready');
+  ipcMain.on('app:close-handler-ready', (event, ready) => {
+    closeHandlerReady = Boolean(ready);
+  });
+
+  ipcMain.removeHandler('app:confirmClose');
+  ipcMain.handle('app:confirmClose', async (event, options) => {
+    clearTimeout(ackTimer);
+    const wantsBackup = options?.backup !== false;
+    if (wantsBackup) {
+      try {
+        backupNow();
+      } catch (err) {
+        console.error('[backup] backup on close failed:', err);
+        const { response } = await dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          buttons: ['Exit anyway', 'Stay open'],
+          defaultId: 1,
+          cancelId: 1,
+          title: 'Backup failed',
+          message: 'The database backup could not be created.',
+          detail: String(err?.message || err),
+        });
+        if (response === 1) return { closed: false, error: String(err?.message || err) };
+      }
+    }
+    finishClose();
+    return { closed: true };
+  });
+}
+
 function readBrandingFromDb() {
   const db = getDb();
   if (!db) return { companyName: 'My Company' };
@@ -32,7 +110,7 @@ function createMenu(branding = {}) {
       submenu: [
         { role: 'reload' },
         { type: 'separator' },
-        { label: 'Exit', click: () => app.quit() },
+        { label: 'Exit', click: () => mainWindow?.close() },
       ],
     },
 
@@ -157,6 +235,27 @@ async function createWindow() {
     });
   }
 
+  closeHandlerReady = false; // the renderer re-announces itself once it has loaded
+  mainWindow.webContents.on('did-start-loading', () => {
+    closeHandlerReady = false;
+  });
+
+  mainWindow.on('close', (event) => {
+    if (allowClose) return;
+    event.preventDefault();
+    requestClose();
+  });
+
+  // Windows shutdown / log-off: no time for a prompt, just take the backup.
+  mainWindow.on('session-end', () => {
+    allowClose = true;
+    try {
+      backupNow();
+    } catch (err) {
+      console.error('[backup] backup at session end failed:', err);
+    }
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -170,8 +269,31 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  await createWindow()
+  registerCloseHandlers()
+  try {
+    await createWindow()
+  } catch (err) {
+    console.error('[startup] failed:', err)
+    dialog.showErrorBox('The POS could not start', String(err?.message || err))
+    app.exit(1)
+    return
+  }
   applyBranding(readBrandingFromDb())
+
+  // If the database was damaged, initDb() already restored the newest healthy
+  // backup - tell the user exactly what happened and what was lost.
+  const recovery = takeRecoveryNotice()
+  if (recovery) {
+    dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title: 'Database restored from backup',
+      message: 'The database was damaged, so it was restored from your latest healthy backup.',
+      detail:
+        `Backup used: ${recovery.restoredFrom}\n\n` +
+        `Anything entered after ${recovery.backupDate} may be missing.\n\n` +
+        `The damaged file was kept here in case it is needed:\n${recovery.damagedCopy}`,
+    })
+  }
 })
 
 app.on('window-all-closed', () => {

@@ -3,13 +3,15 @@ import {
   CustomerRepository, SupplierRepository, StockRepository, TransactionRepository, SettingsRepository,
 } from './repositories.js';
 import { SyncRepository } from './sync-repository.js';
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, dialog, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { setShortcutMap } from '../shortcuts.js';
+import { closeDb, getBackupDir, getDbPath, getSafetyDir } from './connection.js';
+import { MAX_BACKUPS, assertRestorableBackup, createBackup, listBackups, restoreBackupFile } from './backup.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -145,6 +147,52 @@ export function registerIpcHandlers(ipcMain, db) {
   });
 
   ipcMain.handle('app:getVersion', () => app.getVersion());
+
+  // ---- Database backups (see db/backup.js) ----
+  ipcMain.handle('backup:list', () => ({
+    dir: getBackupDir(),
+    max: MAX_BACKUPS,
+    backups: listBackups(getBackupDir()),
+  }));
+
+  ipcMain.handle('backup:create', () => {
+    const result = createBackup(db, getBackupDir());
+    return { name: result.name, size: result.size, dir: getBackupDir() };
+  });
+
+  ipcMain.handle('backup:openFolder', async () => {
+    const dir = getBackupDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const openError = await shell.openPath(dir);
+    if (openError) throw new Error(openError);
+    return { success: true, dir };
+  });
+
+  ipcMain.handle('backup:restore', (event, payload = {}) => {
+    const fileName = String(payload?.fileName || '');
+    // Validate first (name, file exists, passes integrity check) while the app
+    // is still fully working - a bad request must never close the database.
+    assertRestorableBackup(getBackupDir(), fileName);
+
+    const restart = () => {
+      // `quasar dev` ties Electron to its dev server, so only relaunch when packaged.
+      if (app.isPackaged) app.relaunch();
+      app.exit(0);
+    };
+
+    // The live connection must be closed before its file is replaced.
+    closeDb();
+    try {
+      restoreBackupFile(getDbPath(), getBackupDir(), getSafetyDir(), fileName);
+    } catch (err) {
+      // Rolled back: the original database is still in place. Restart so it reopens.
+      dialog.showErrorBox('Restore failed', `${err.message}\n\nYour current data was not changed.`);
+      restart();
+      return { restarted: app.isPackaged, failed: true };
+    }
+    restart();
+    return { restarted: app.isPackaged };
+  });
 
   ipcMain.handle('app:openCalculator', () => {
     if (process.platform === 'win32') {

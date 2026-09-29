@@ -1,0 +1,849 @@
+diff --git a/src-electron/db/backup.js b/src-electron/db/backup.js
+new file mode 100644
+index 0000000..976800d
+--- /dev/null
++++ b/src-electron/db/backup.js
+@@ -0,0 +1,242 @@
++/**
++ * Database backup + recovery helpers (main process, no Electron imports so the
++ * logic stays easy to test).
++ *
++ * Model: ONE backup file per calendar day, newest MAX_BACKUPS days kept.
++ *   nid-pos_2026-09-28.sqlite3
++ * A second backup on the same day replaces that day's file with the latest
++ * state, so five copies always means five different days of history.
++ *
++ * Backups are made with `VACUUM INTO`, which writes a consistent, compact copy
++ * of a live WAL-mode database in one step (no half-written pages, no -wal/-shm
++ * files to chase). Each copy is integrity-checked before it replaces anything,
++ * so a bad copy can never overwrite a good backup.
++ */
++import Database from 'better-sqlite3';
++import fs from 'node:fs';
++import path from 'node:path';
++
++export const MAX_BACKUPS = 5;
++const BACKUP_RE = /^nid-pos_(\d{4}-\d{2}-\d{2})\.sqlite3$/;
++const MAX_SAFETY_COPIES = 3;
++
++function ensureDir(dir) {
++  fs.mkdirSync(dir, { recursive: true });
++}
++
++export function localDateStamp(date = new Date()) {
++  const y = date.getFullYear();
++  const m = String(date.getMonth() + 1).padStart(2, '0');
++  const d = String(date.getDate()).padStart(2, '0');
++  return `${y}-${m}-${d}`;
++}
++
++function timeStamp(date = new Date()) {
++  const t = [date.getHours(), date.getMinutes(), date.getSeconds()].map((n) => String(n).padStart(2, '0')).join('-');
++  return `${localDateStamp(date)}_${t}`;
++}
++
++/** Only genuine corruption should trigger a restore - not locked files or permission errors. */
++export function isCorruptionError(err) {
++  const code = String(err?.code || '');
++  return code.startsWith('SQLITE_CORRUPT') || code === 'SQLITE_NOTADB' || err?.isIntegrityFailure === true;
++}
++
++/**
++ * Opens `file` read-only and runs an integrity check. `full` uses
++ * integrity_check (thorough, used for backups); otherwise quick_check (fast,
++ * used at startup). Returns { ok, detail }.
++ */
++export function verifyDatabaseFile(file, { full = true } = {}) {
++  let d;
++  try {
++    d = new Database(file, { readonly: true, fileMustExist: true });
++    const result = d.pragma(full ? 'integrity_check' : 'quick_check', { simple: true });
++    return { ok: result === 'ok', detail: String(result) };
++  } catch (err) {
++    return { ok: false, detail: err.message, error: err };
++  } finally {
++    try { d?.close(); } catch { /* ignore */ }
++  }
++}
++
++/**
++ * Opens the live database and makes sure it is healthy (fast quick_check).
++ * Throws an error that isCorruptionError() recognises when the file is damaged;
++ * other failures (locked file, permissions) keep their original error so a
++ * healthy DB is never mistaken for a broken one.
++ */
++export function openVerifiedDatabase(file) {
++  let d;
++  try {
++    d = new Database(file);
++    d.pragma('journal_mode = WAL');
++    const result = d.pragma('quick_check', { simple: true });
++    if (result !== 'ok') {
++      const err = new Error(`Integrity check failed: ${result}`);
++      err.isIntegrityFailure = true;
++      throw err;
++    }
++    return d;
++  } catch (err) {
++    try { d?.close(); } catch { /* ignore */ }
++    throw err;
++  }
++}
++
++function moveFile(from, to) {
++  try {
++    fs.renameSync(from, to);
++  } catch (err) {
++    if (err.code !== 'EXDEV') throw err;
++    fs.copyFileSync(from, to); // different drive: copy then remove
++    fs.rmSync(from, { force: true });
++  }
++}
++
++export function listBackups(backupDir) {
++  if (!fs.existsSync(backupDir)) return [];
++  return fs
++    .readdirSync(backupDir)
++    .map((name) => ({ name, match: BACKUP_RE.exec(name) }))
++    .filter((e) => e.match)
++    .map(({ name, match }) => {
++      const stat = fs.statSync(path.join(backupDir, name));
++      return { name, date: match[1], size: stat.size, modified: stat.mtime.toISOString() };
++    })
++    .sort((a, b) => (a.date < b.date ? 1 : -1)); // newest first
++}
++
++export function pruneBackups(backupDir, max = MAX_BACKUPS) {
++  const removed = [];
++  for (const entry of listBackups(backupDir).slice(max)) {
++    fs.rmSync(path.join(backupDir, entry.name), { force: true });
++    removed.push(entry.name);
++  }
++  return removed;
++}
++
++/**
++ * Writes today's backup from the live `db`. Verifies the copy first, then swaps
++ * it in, then prunes to `max` files. Throws (and leaves existing backups
++ * untouched) if anything fails.
++ */
++export function createBackup(db, backupDir, { max = MAX_BACKUPS, now = new Date() } = {}) {
++  ensureDir(backupDir);
++  const finalName = `nid-pos_${localDateStamp(now)}.sqlite3`;
++  const finalPath = path.join(backupDir, finalName);
++  const tmpPath = path.join(backupDir, `.tmp-${process.pid}-${Date.now()}.sqlite3`);
++  try {
++    db.prepare('VACUUM INTO ?').run(tmpPath);
++    const check = verifyDatabaseFile(tmpPath, { full: true });
++    if (!check.ok) throw new Error(`Backup failed its integrity check: ${check.detail}`);
++    fs.renameSync(tmpPath, finalPath);
++  } finally {
++    fs.rmSync(tmpPath, { force: true });
++  }
++  const removed = pruneBackups(backupDir, max);
++  const stat = fs.statSync(finalPath);
++  return { name: finalName, path: finalPath, size: stat.size, removed };
++}
++
++/** True when the DB already holds tables (skip backing up a brand-new empty file). */
++export function hasUserTables(db) {
++  return db.prepare(`SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).get().n > 0;
++}
++
++/** Start-of-day safety net: only creates a backup if today has none yet. */
++export function ensureDailyBackup(db, backupDir, opts = {}) {
++  const today = `nid-pos_${localDateStamp(opts.now || new Date())}.sqlite3`;
++  if (fs.existsSync(path.join(backupDir, today))) return null;
++  if (!hasUserTables(db)) return null;
++  return createBackup(db, backupDir, opts);
++}
++
++function pruneSafety(safetyDir) {
++  if (!fs.existsSync(safetyDir)) return;
++  const files = fs
++    .readdirSync(safetyDir)
++    .filter((n) => /\.sqlite3$/.test(n))
++    .map((n) => ({ n, t: fs.statSync(path.join(safetyDir, n)).mtimeMs }))
++    .sort((a, b) => b.t - a.t);
++  for (const f of files.slice(MAX_SAFETY_COPIES)) {
++    fs.rmSync(path.join(safetyDir, f.n), { force: true });
++    fs.rmSync(path.join(safetyDir, `${f.n}-wal`), { force: true });
++    fs.rmSync(path.join(safetyDir, `${f.n}-shm`), { force: true });
++  }
++}
++
++/** Keeps a copy of the current DB before it is replaced (kept: newest 3). */
++function quarantine(dbPath, safetyDir, label) {
++  ensureDir(safetyDir);
++  const dest = path.join(safetyDir, `${label}_${timeStamp()}.sqlite3`);
++  const moved = [];
++  const relocate = (from, to) => {
++    if (!fs.existsSync(from)) return;
++    moveFile(from, to);
++    moved.push([from, to]);
++  };
++  relocate(dbPath, dest);
++  // A stale WAL/SHM next to a replaced DB file can corrupt it - always clear them.
++  for (const suffix of ['-wal', '-shm']) relocate(`${dbPath}${suffix}`, `${dest}${suffix}`);
++  pruneSafety(safetyDir);
++  // If installing the replacement fails we put everything back, so a failed
++  // restore can never leave the app without a database.
++  const undo = () => {
++    for (const [from, to] of moved) {
++      if (fs.existsSync(to)) moveFile(to, from);
++    }
++  };
++  return { dest, undo };
++}
++
++function installBackupFile(backupPath, dbPath) {
++  const staging = `${dbPath}.restoring`;
++  fs.copyFileSync(backupPath, staging);
++  fs.renameSync(staging, dbPath);
++}
++
++/**
++ * Startup recovery: the DB failed its check. Move the damaged files aside and
++ * install the newest backup that passes a full integrity check. Throws if no
++ * usable backup exists (the damaged file is then left exactly where it was).
++ */
++export function recoverFromBackup(dbPath, backupDir, safetyDir) {
++  const candidate = listBackups(backupDir).find((b) => verifyDatabaseFile(path.join(backupDir, b.name), { full: true }).ok);
++  if (!candidate) {
++    throw new Error(`The database is damaged and no valid backup was found in:\n${backupDir}`);
++  }
++  const damaged = quarantine(dbPath, safetyDir, 'damaged');
++  try {
++    installBackupFile(path.join(backupDir, candidate.name), dbPath);
++  } catch (err) {
++    damaged.undo();
++    throw err;
++  }
++  return { restoredFrom: candidate.name, backupDate: candidate.date, damagedCopy: damaged.dest };
++}
++
++/**
++ * Manual restore of a chosen backup. The caller must have CLOSED the live
++ * connection first. The current DB is kept in the safety folder.
++ */
++export function assertRestorableBackup(backupDir, fileName) {
++  if (!BACKUP_RE.test(fileName || '')) throw new Error('Invalid backup file name');
++  const source = path.join(backupDir, fileName);
++  if (!fs.existsSync(source)) throw new Error('Backup file not found');
++  const check = verifyDatabaseFile(source, { full: true });
++  if (!check.ok) throw new Error(`This backup is damaged and cannot be restored: ${check.detail}`);
++  return source;
++}
++
++export function restoreBackupFile(dbPath, backupDir, safetyDir, fileName) {
++  const source = assertRestorableBackup(backupDir, fileName);
++  const previous = quarantine(dbPath, safetyDir, 'before-restore');
++  try {
++    installBackupFile(source, dbPath);
++  } catch (err) {
++    previous.undo();
++    throw err;
++  }
++  return { restoredFrom: fileName, previousCopy: previous.dest };
++}
+diff --git a/src-electron/db/connection.js b/src-electron/db/connection.js
+index 1d18447..4600722 100644
+--- a/src-electron/db/connection.js
++++ b/src-electron/db/connection.js
+@@ -1,10 +1,57 @@
+-import Database from 'better-sqlite3';
+ import { app } from 'electron';
+ import path from 'node:path';
++import os from 'node:os';
+ import fs from 'node:fs';
+ import { runMigrations } from '../../migrations.js';
++import {
++  ensureDailyBackup,
++  isCorruptionError,
++  openVerifiedDatabase,
++  recoverFromBackup,
++} from './backup.js';
+ 
+ let db;
++let currentDbPath = null;
++let recoveryNotice = null;
++
++/**
++ * Backups live in the user's Documents folder (not next to the app) so they
++ * survive a reinstall or a wiped install folder. Dev builds use their own
++ * folder so test data never pushes real backups out of the 5-copy limit.
++ */
++export function getBackupDir() {
++  let documents;
++  try {
++    documents = app.getPath('documents');
++  } catch {
++    documents = path.join(os.homedir(), 'Documents');
++  }
++  return path.join(documents, app.isPackaged ? 'POS Backups' : 'POS Backups (dev)');
++}
++
++export function getSafetyDir() {
++  return path.join(getBackupDir(), 'safety');
++}
++
++export function getDbPath() {
++  return currentDbPath;
++}
++
++/** Returns (once) details of an automatic recovery that happened at startup. */
++export function takeRecoveryNotice() {
++  const notice = recoveryNotice;
++  recoveryNotice = null;
++  return notice;
++}
++
++export function closeDb() {
++  try {
++    db?.close();
++  } catch {
++    /* already closed */
++  }
++  db = undefined;
++}
+ 
+ function ensureDir(dirPath) {
+   if (!fs.existsSync(dirPath)) {
+@@ -53,11 +100,29 @@ function resolveDbPath() {
+ 
+ export async function initDb() {
+   const dbPath = resolveDbPath();
+-  db = new Database(dbPath);
++  currentDbPath = dbPath;
++
++  try {
++    db = openVerifiedDatabase(dbPath);
++  } catch (err) {
++    if (!isCorruptionError(err)) throw err;
++    console.error('[db] database failed its integrity check, attempting recovery:', err.message);
++    // Moves the damaged file aside and installs the newest healthy backup.
++    // Throws a readable error if there is no usable backup.
++    recoveryNotice = recoverFromBackup(dbPath, getBackupDir(), getSafetyDir());
++    db = openVerifiedDatabase(dbPath);
++  }
+ 
+-  db.pragma('journal_mode = WAL');
+   db.pragma('foreign_keys = ON');
+ 
++  // Start-of-day safety net (only if today has no backup yet) - taken BEFORE
++  // migrations so a bad migration can also be rolled back.
++  try {
++    ensureDailyBackup(db, getBackupDir());
++  } catch (err) {
++    console.error('[backup] startup backup failed:', err.message);
++  }
++
+   runMigrations(db);
+ 
+   return db;
+diff --git a/src-electron/db/ipc-handlers.js b/src-electron/db/ipc-handlers.js
+index 2894d6d..042032d 100644
+--- a/src-electron/db/ipc-handlers.js
++++ b/src-electron/db/ipc-handlers.js
+@@ -3,13 +3,15 @@ import {
+   CustomerRepository, SupplierRepository, StockRepository, TransactionRepository, SettingsRepository,
+ } from './repositories.js';
+ import { SyncRepository } from './sync-repository.js';
+-import { app, BrowserWindow, shell } from 'electron';
++import { app, BrowserWindow, dialog, shell } from 'electron';
+ import fs from 'node:fs';
+ import path from 'node:path';
+ import os from 'node:os';
+ import { spawn, execFile } from 'node:child_process';
+ import { promisify } from 'node:util';
+ import { setShortcutMap } from '../shortcuts.js';
++import { closeDb, getBackupDir, getDbPath, getSafetyDir } from './connection.js';
++import { MAX_BACKUPS, assertRestorableBackup, createBackup, listBackups, restoreBackupFile } from './backup.js';
+ 
+ const execFileAsync = promisify(execFile);
+ 
+@@ -146,6 +148,52 @@ export function registerIpcHandlers(ipcMain, db) {
+ 
+   ipcMain.handle('app:getVersion', () => app.getVersion());
+ 
++  // ---- Database backups (see db/backup.js) ----
++  ipcMain.handle('backup:list', () => ({
++    dir: getBackupDir(),
++    max: MAX_BACKUPS,
++    backups: listBackups(getBackupDir()),
++  }));
++
++  ipcMain.handle('backup:create', () => {
++    const result = createBackup(db, getBackupDir());
++    return { name: result.name, size: result.size, dir: getBackupDir() };
++  });
++
++  ipcMain.handle('backup:openFolder', async () => {
++    const dir = getBackupDir();
++    fs.mkdirSync(dir, { recursive: true });
++    const openError = await shell.openPath(dir);
++    if (openError) throw new Error(openError);
++    return { success: true, dir };
++  });
++
++  ipcMain.handle('backup:restore', (event, payload = {}) => {
++    const fileName = String(payload?.fileName || '');
++    // Validate first (name, file exists, passes integrity check) while the app
++    // is still fully working - a bad request must never close the database.
++    assertRestorableBackup(getBackupDir(), fileName);
++
++    const restart = () => {
++      // `quasar dev` ties Electron to its dev server, so only relaunch when packaged.
++      if (app.isPackaged) app.relaunch();
++      app.exit(0);
++    };
++
++    // The live connection must be closed before its file is replaced.
++    closeDb();
++    try {
++      restoreBackupFile(getDbPath(), getBackupDir(), getSafetyDir(), fileName);
++    } catch (err) {
++      // Rolled back: the original database is still in place. Restart so it reopens.
++      dialog.showErrorBox('Restore failed', `${err.message}\n\nYour current data was not changed.`);
++      restart();
++      return { restarted: app.isPackaged, failed: true };
++    }
++    restart();
++    return { restarted: app.isPackaged };
++  });
++
+   ipcMain.handle('app:openCalculator', () => {
+     if (process.platform === 'win32') {
+       spawn('calc.exe', [], { detached: true, stdio: 'ignore' }).unref();
+diff --git a/src-electron/electron-main.js b/src-electron/electron-main.js
+index cf165c3..422b376 100644
+--- a/src-electron/electron-main.js
++++ b/src-electron/electron-main.js
+@@ -1,8 +1,9 @@
+-import { app, BrowserWindow, ipcMain, Menu } from 'electron';
++import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
+ import path from 'node:path';
+ import os from 'node:os';
+ import { fileURLToPath } from 'node:url';
+-import { initDb, getDb } from './db/connection.js';
++import { initDb, getDb, closeDb, getBackupDir, takeRecoveryNotice } from './db/connection.js';
++import { createBackup } from './db/backup.js';
+ import { registerIpcHandlers } from './db/ipc-handlers.js';
+ import { loadShortcutsFromDb, getShortcutMap, comboFromInput } from './shortcuts.js';
+ 
+@@ -12,6 +13,83 @@ const platform = process.platform || os.platform();
+ const currentDir = fileURLToPath(new URL('.', import.meta.url));
+ 
+ let mainWindow;
++
++// ---- Close / backup flow -------------------------------------------------
++// Closing the window is intercepted: the renderer shows a "save your work"
++// prompt and, when the user confirms, calls app:confirmClose which takes the
++// daily backup and then really quits. If the renderer can't answer (crashed,
++// still loading, page error) we never trap the user: after 3 s without an
++// acknowledgement we back up and close anyway.
++let allowClose = false;
++let closeHandlerReady = false;
++let ackTimer = null;
++
++function backupNow() {
++  return createBackup(getDb(), getBackupDir());
++}
++
++function finishClose() {
++  allowClose = true;
++  clearTimeout(ackTimer);
++  closeDb();
++  app.quit();
++}
++
++function quitWithBackupNoPrompt() {
++  try {
++    backupNow();
++  } catch (err) {
++    console.error('[backup] backup on close failed:', err);
++  }
++  finishClose();
++}
++
++function requestClose() {
++  const wc = mainWindow?.webContents;
++  if (!wc || wc.isDestroyed() || wc.isCrashed() || !closeHandlerReady) {
++    quitWithBackupNoPrompt();
++    return;
++  }
++  clearTimeout(ackTimer);
++  ackTimer = setTimeout(quitWithBackupNoPrompt, 3000);
++  wc.send('app:close-requested');
++}
++
++function registerCloseHandlers() {
++  ipcMain.removeAllListeners('app:close-ack');
++  ipcMain.on('app:close-ack', () => clearTimeout(ackTimer));
++
++  ipcMain.removeAllListeners('app:close-handler-ready');
++  ipcMain.on('app:close-handler-ready', (event, ready) => {
++    closeHandlerReady = Boolean(ready);
++  });
++
++  ipcMain.removeHandler('app:confirmClose');
++  ipcMain.handle('app:confirmClose', async (event, options) => {
++    clearTimeout(ackTimer);
++    const wantsBackup = options?.backup !== false;
++    if (wantsBackup) {
++      try {
++        backupNow();
++      } catch (err) {
++        console.error('[backup] backup on close failed:', err);
++        const { response } = await dialog.showMessageBox(mainWindow, {
++          type: 'warning',
++          buttons: ['Exit anyway', 'Stay open'],
++          defaultId: 1,
++          cancelId: 1,
++          title: 'Backup failed',
++          message: 'The database backup could not be created.',
++          detail: String(err?.message || err),
++        });
++        if (response === 1) return { closed: false, error: String(err?.message || err) };
++      }
++    }
++    finishClose();
++    return { closed: true };
++  });
++}
++
+ function readBrandingFromDb() {
+   const db = getDb();
+   if (!db) return { companyName: 'My Company' };
+@@ -32,7 +110,7 @@ function createMenu(branding = {}) {
+       submenu: [
+         { role: 'reload' },
+         { type: 'separator' },
+-        { label: 'Exit', click: () => app.quit() },
++        { label: 'Exit', click: () => mainWindow?.close() },
+       ],
+     },
+ 
+@@ -157,6 +235,27 @@ async function createWindow() {
+     });
+   }
+ 
++  closeHandlerReady = false; // the renderer re-announces itself once it has loaded
++  mainWindow.webContents.on('did-start-loading', () => {
++    closeHandlerReady = false;
++  });
++
++  mainWindow.on('close', (event) => {
++    if (allowClose) return;
++    event.preventDefault();
++    requestClose();
++  });
++
++  // Windows shutdown / log-off: no time for a prompt, just take the backup.
++  mainWindow.on('session-end', () => {
++    allowClose = true;
++    try {
++      backupNow();
++    } catch (err) {
++      console.error('[backup] backup at session end failed:', err);
++    }
++  });
++
+   mainWindow.on('closed', () => {
+     mainWindow = null;
+   });
+@@ -170,8 +269,31 @@ async function createWindow() {
+ }
+ 
+ app.whenReady().then(async () => {
+-  await createWindow()
++  registerCloseHandlers()
++  try {
++    await createWindow()
++  } catch (err) {
++    console.error('[startup] failed:', err)
++    dialog.showErrorBox('The POS could not start', String(err?.message || err))
++    app.exit(1)
++    return
++  }
+   applyBranding(readBrandingFromDb())
++
++  // If the database was damaged, initDb() already restored the newest healthy
++  // backup - tell the user exactly what happened and what was lost.
++  const recovery = takeRecoveryNotice()
++  if (recovery) {
++    dialog.showMessageBox(mainWindow, {
++      type: 'warning',
++      title: 'Database restored from backup',
++      message: 'The database was damaged, so it was restored from your latest healthy backup.',
++      detail:
++        `Backup used: ${recovery.restoredFrom}\n\n` +
++        `Anything entered after ${recovery.backupDate} may be missing.\n\n` +
++        `The damaged file was kept here in case it is needed:\n${recovery.damagedCopy}`,
++    })
++  }
+ })
+ 
+ app.on('window-all-closed', () => {
+diff --git a/src-electron/electron-preload.js b/src-electron/electron-preload.js
+index bdcf7ba..4561cee 100644
+--- a/src-electron/electron-preload.js
++++ b/src-electron/electron-preload.js
+@@ -38,6 +38,31 @@ contextBridge.exposeInMainWorld('appBridge', {
+   getVersion: () => ipcRenderer.invoke('app:getVersion'),
+   updateBranding: (payload) => ipcRenderer.invoke('app:updateBranding', toPlain(payload)),
+   updateShortcuts: (map) => ipcRenderer.invoke('app:updateShortcuts', toPlain(map)),
++  /**
++   * callback() fires when the user tries to close the app. Acknowledges to the
++   * main process immediately (so it knows a prompt is being shown), then calls
++   * the callback. Returns an unsubscribe function.
++   */
++  onCloseRequested: (callback) => {
++    const listener = () => {
++      ipcRenderer.send('app:close-ack');
++      callback();
++    };
++    ipcRenderer.on('app:close-requested', listener);
++    ipcRenderer.send('app:close-handler-ready', true);
++    return () => {
++      ipcRenderer.removeListener('app:close-requested', listener);
++      ipcRenderer.send('app:close-handler-ready', false);
++    };
++  },
++  /** options: { backup: boolean }. Resolves { closed: false } only if a failed backup was declined. */
++  confirmClose: (options) => ipcRenderer.invoke('app:confirmClose', toPlain(options)),
++  backups: {
++    list: () => ipcRenderer.invoke('backup:list'),
++    create: () => ipcRenderer.invoke('backup:create'),
++    openFolder: () => ipcRenderer.invoke('backup:openFolder'),
++    restore: (fileName) => ipcRenderer.invoke('backup:restore', toPlain({ fileName })),
++  },
+   /** callback(actionId) fires whenever a mapped Ctrl/Shift+digit combo is pressed anywhere in the window. Returns an unsubscribe function. */
+   onShortcut: (callback) => {
+     const listener = (_event, actionId) => callback(actionId);
+diff --git a/src/layouts/MainLayout.vue b/src/layouts/MainLayout.vue
+index 6fe2a44..10873b3 100644
+--- a/src/layouts/MainLayout.vue
++++ b/src/layouts/MainLayout.vue
+@@ -147,6 +147,34 @@
+         </q-card-actions>
+       </q-card>
+     </q-dialog>
++
++    <q-dialog v-model="showCloseDialog" persistent>
++      <q-card style="min-width: 440px; max-width: 92vw;">
++        <q-card-section class="text-h6">Close POS</q-card-section>
++        <q-card-section class="q-gutter-sm">
++          <q-banner v-if="closeCart.hasItems" rounded class="bg-orange-1 text-orange-10">
++            <template v-if="closeCart.isExisting">
++              You have unsaved changes to an existing {{ closeCart.label }} ({{ closeCart.count }} item(s)).
++              They cannot be saved automatically - press Cancel and save it first, or they will be lost.
++            </template>
++            <template v-else>
++              You have an unsaved {{ closeCart.label }} with {{ closeCart.count }} item(s) in the cart.
++              It will be saved as a draft.
++            </template>
++          </q-banner>
++          <div class="text-body2">
++            Your data is saved as you work. Saving now also makes a backup copy of the database
++            (the last {{ closeBackupMax }} days are kept).
++          </div>
++        </q-card-section>
++        <q-card-actions align="right">
++          <q-btn flat no-caps label="Cancel" :disable="closing" @click="showCloseDialog = false" />
++          <q-btn flat no-caps color="negative" label="Exit without backup" :disable="closing"
++            @click="confirmClose(false)" />
++          <q-btn color="primary" no-caps :label="closePrimaryLabel" :loading="closing" @click="confirmClose(true)" />
++        </q-card-actions>
++      </q-card>
++    </q-dialog>
+   </q-layout>
+ </template>
+ 
+@@ -182,6 +210,9 @@ const windowMode = computed(() => desktopStore.mode);
+ const savingTransaction = ref(false);
+ const showRecentTransactions = ref(false);
+ const showPostSaveDialog = ref(false);
++const showCloseDialog = ref(false);
++const closing = ref(false);
++const closeBackupMax = 5;
+ const lastSavedTransaction = ref(null);
+ const headerHeight = ref(102);
+ 
+@@ -425,6 +456,41 @@ function handleShortcut(actionId) {
+ }
+ 
+ let unsubscribeShortcut = null;
++let unsubscribeClose = null;
++
++// --- Close prompt ---------------------------------------------------------------
++// The main process intercepts closing the window and asks us to show this
++// prompt. "Save & Exit" saves the unsaved cart as a draft (new documents only),
++// then the main process takes the database backup and quits.
++const closeCart = computed(() => {
++  const draft = transactionsStore.draft;
++  const count = draft.lineItems?.length || 0;
++  const label = { quote: 'quotation', invoice: 'invoice', purchase_order: 'purchase order' }[draft.type] || 'document';
++  return { hasItems: count > 0, isExisting: Boolean(draft.id), count, label };
++});
++
++const closePrimaryLabel = computed(() =>
++  closeCart.value.hasItems && !closeCart.value.isExisting ? 'Save Draft & Exit' : 'Save & Exit',
++);
++
++async function confirmClose(withBackup) {
++  closing.value = true;
++  try {
++    // Only brand-new carts are auto-saved. An existing document being edited is
++    // left alone: saving it "as a draft" here would silently change its status.
++    if (withBackup && closeCart.value.hasItems && !closeCart.value.isExisting) {
++      await transactionsStore.saveDraft('draft');
++    }
++    const result = await window.appBridge.confirmClose({ backup: withBackup });
++    if (result && result.closed === false) {
++      $q.notify({ type: 'negative', message: result.error || 'The app was not closed' });
++    }
++  } catch (err) {
++    $q.notify({ type: 'negative', message: err.message || 'Could not save before closing' });
++  } finally {
++    closing.value = false;
++  }
++}
+ 
+ /**
+  * Enter saves the current transaction - but only when that's unambiguous:
+@@ -628,9 +694,16 @@ onMounted(() => {
+     unsubscribeShortcut = window.appBridge.onShortcut(handleShortcut);
+   }
+   window.addEventListener('keydown', onGlobalKeydown);
++
++  if (window.appBridge?.onCloseRequested) {
++    unsubscribeClose = window.appBridge.onCloseRequested(() => {
++      showCloseDialog.value = true;
++    });
++  }
+ });
+ 
+ onBeforeUnmount(() => {
++  if (unsubscribeClose) unsubscribeClose();
+   stopDrag();
+   if (resizeObserver) resizeObserver.disconnect();
+   if (unsubscribeShortcut) unsubscribeShortcut();
+diff --git a/src/pages/SettingsPage.vue b/src/pages/SettingsPage.vue
+index b75b63d..117cd00 100644
+--- a/src/pages/SettingsPage.vue
++++ b/src/pages/SettingsPage.vue
+@@ -219,6 +219,36 @@
+       </q-card-section>
+     </q-card>
+ 
++    <q-card v-if="hasBackupBridge" flat bordered class="q-mb-md">
++      <q-card-section class="row items-center">
++        <div class="text-subtitle1 col">Database Backup &amp; Recovery</div>
++        <q-btn flat dense no-caps icon="folder_open" label="Open folder" class="q-mr-sm" @click="openBackupFolder" />
++        <q-btn color="primary" dense no-caps icon="backup" label="Back up now" :loading="backingUp"
++          @click="backUpNow" />
++      </q-card-section>
++      <q-card-section class="q-pt-none">
++        <div class="text-caption text-grey">
++          A backup is made every day when you close the POS (after you confirm the save prompt). The last
++          {{ backupInfo.max }} days are kept. If the database is ever damaged, the newest healthy backup is
++          restored automatically on the next start.
++        </div>
++        <div class="text-caption text-grey q-mt-xs">Folder: {{ backupInfo.dir || '-' }}</div>
++      </q-card-section>
++      <q-list v-if="backupInfo.backups.length" separator>
++        <q-item v-for="b in backupInfo.backups" :key="b.name">
++          <q-item-section>
++            <q-item-label>{{ b.date }}</q-item-label>
++            <q-item-label caption>{{ formatBackupSize(b.size) }} - saved {{ new Date(b.modified).toLocaleString() }}</q-item-label>
++          </q-item-section>
++          <q-item-section side>
++            <q-btn flat dense no-caps color="negative" icon="settings_backup_restore" label="Restore"
++              @click="confirmRestore(b)" />
++          </q-item-section>
++        </q-item>
++      </q-list>
++      <q-card-section v-else class="text-caption text-grey">No backups yet - press "Back up now".</q-card-section>
++    </q-card>
++
+     <q-card flat bordered class="q-mb-md">
+       <q-card-section class="text-subtitle1">Document Numbering</q-card-section>
+       <q-card-section class="row q-col-gutter-sm">
+@@ -246,6 +276,68 @@ import {
+ const $q = useQuasar();
+ const settingsStore = useSettingsStore();
+ const saving = ref(false);
++
++// --- Database backups (Electron only) ---
++const hasBackupBridge = Boolean(window.appBridge?.backups);
++const backingUp = ref(false);
++const backupInfo = reactive({ dir: '', max: 5, backups: [] });
++
++function formatBackupSize(bytes) {
++  const mb = Number(bytes || 0) / (1024 * 1024);
++  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(Number(bytes || 0) / 1024))} KB`;
++}
++
++async function loadBackups() {
++  if (!hasBackupBridge) return;
++  try {
++    Object.assign(backupInfo, await window.appBridge.backups.list());
++  } catch (err) {
++    $q.notify({ type: 'negative', message: err.message || 'Could not read backups' });
++  }
++}
++
++async function backUpNow() {
++  backingUp.value = true;
++  try {
++    await window.appBridge.backups.create();
++    await loadBackups();
++    $q.notify({ type: 'positive', message: 'Backup created' });
++  } catch (err) {
++    $q.notify({ type: 'negative', message: err.message || 'Backup failed' });
++  } finally {
++    backingUp.value = false;
++  }
++}
++
++async function openBackupFolder() {
++  try {
++    await window.appBridge.backups.openFolder();
++  } catch (err) {
++    $q.notify({ type: 'negative', message: err.message || 'Could not open the backup folder' });
++  }
++}
++
++function confirmRestore(backup) {
++  $q.dialog({
++    title: 'Restore backup?',
++    message:
++      `Replace the current database with the backup from ${backup.date}? ` +
++      'Everything entered after that will be lost (a copy of the current database is kept). ' +
++      'Any unsaved cart will be lost and the POS will restart.',
++    cancel: true,
++    persistent: true,
++    ok: { label: 'Restore', color: 'negative', noCaps: true },
++  }).onOk(async () => {
++    try {
++      const result = await window.appBridge.backups.restore(backup.name);
++      if (result && result.restarted === false) {
++        $q.notify({ type: 'info', message: 'Restored. Please start the app again.' });
++      }
++    } catch (err) {
++      $q.notify({ type: 'negative', message: err.message || 'Restore failed' });
++    }
++  });
++}
+ const logoFile = ref(null);
+ const stampFile = ref(null);
+ const loadingPrinters = ref(false);
+@@ -451,6 +543,7 @@ function signOut() {
+ }
+ 
+ onMounted(async () => {
++  loadBackups();
+   await settingsStore.fetchAll();
+   Object.assign(form, settingsStore.values);
+   form.default_tax_rate = Number(settingsStore.values.default_tax_rate || 0);
