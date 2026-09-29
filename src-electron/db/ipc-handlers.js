@@ -7,6 +7,7 @@ import { app, BrowserWindow, dialog, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { setShortcutMap } from '../shortcuts.js';
@@ -60,6 +61,102 @@ async function waitForDocumentAssets(win) {
   }
 }
 
+// ---- Printing (A4 only) --------------------------------------------------
+// No POS/receipt printer is supported yet: everything is A4 portrait.
+// Hidden print windows are NOT offscreen: offscreen mode keeps painting
+// bitmaps (extra CPU/RAM on 4 GB PCs) and is unreliable for print jobs.
+const A4_PRINT_OPTIONS = {
+  pageSize: 'A4',
+  landscape: false,
+  printBackground: true,
+  margins: { marginType: 'none' }, // page margins come from the template's @page rule
+};
+
+const SILENT_PRINT_TIMEOUT_MS = 30000;
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createPrintWindow() {
+  return new BrowserWindow({
+    show: false,
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+      spellcheck: false,
+    },
+  });
+}
+
+/**
+ * Sends the loaded page to the printer. Resolves { success, cancelled }.
+ * A silent job that the printer/spooler never acknowledges is rejected after
+ * a timeout instead of leaving the UI waiting forever.
+ */
+function sendToPrinter(win, options, timeoutMs = 0) {
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    if (timeoutMs) {
+      timer = setTimeout(() => {
+        reject(new Error(
+          'The printer did not respond. Check that it is online (not "Use Printer Offline") and clear the Windows print queue.'
+        ));
+      }, timeoutMs);
+    }
+    win.webContents.print(options, (success, failureReason) => {
+      clearTimeout(timer);
+      if (success) {
+        resolve({ success: true, cancelled: false });
+      } else if (String(failureReason || '').toLowerCase().includes('cancel')) {
+        resolve({ success: false, cancelled: true });
+      } else {
+        reject(new Error(failureReason || 'Print failed'));
+      }
+    });
+  });
+}
+
+// ---- In-app PDF viewer -----------------------------------------------------
+// Generated PDFs open in the app's own Chromium PDF viewer instead of handing
+// them to Edge/Chrome/whatever the OS default is. One viewer window at a time
+// keeps memory low.
+let pdfViewerWindow = null;
+
+function openPdfInApp(filePath) {
+  if (pdfViewerWindow && !pdfViewerWindow.isDestroyed()) {
+    pdfViewerWindow.destroy();
+  }
+  const win = new BrowserWindow({
+    width: 1000,
+    height: 900,
+    title: path.basename(filePath),
+    autoHideMenuBar: true,
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      spellcheck: false,
+    },
+  });
+  pdfViewerWindow = win;
+  win.setMenuBarVisibility(false);
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  // -3 (ERR_ABORTED) is normal for the PDF viewer; anything else means the
+  // viewer could not load, so fall back to the OS default app.
+  win.webContents.on('did-fail-load', (_event, errorCode) => {
+    if (errorCode === -3 || win.isDestroyed()) return;
+    win.destroy();
+    shell.openPath(filePath);
+  });
+  win.on('closed', () => {
+    if (pdfViewerWindow === win) pdfViewerWindow = null;
+  });
+  win.loadURL(pathToFileURL(filePath).href).catch(() => {});
+}
+
 async function createPdfFile(html, defaultFileName) {
   const dateFolder = new Date().toLocaleDateString('en-GB', {
     day: '2-digit', month: 'short', year: 'numeric',
@@ -70,16 +167,21 @@ async function createPdfFile(html, defaultFileName) {
   const baseName = path.parse(filename).name;
   const ext = path.extname(filename) || '.pdf';
   const fullPath = path.join(receiptsDir, getAvailableFilename(receiptsDir, baseName, ext));
-  const printWin = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
+  const printWin = createPrintWindow();
   let tempHtml = null;
   try {
     tempHtml = writeTempHtml(html);
     await printWin.loadFile(tempHtml.filePath);
     await waitForDocumentAssets(printWin);
-    const pdfBuffer = await printWin.webContents.printToPDF({ pageSize: 'A4', printBackground: true });
+    const pdfBuffer = await printWin.webContents.printToPDF({
+      pageSize: 'A4',
+      landscape: false,
+      printBackground: true,
+      preferCSSPageSize: true,
+    });
     fs.writeFileSync(fullPath, pdfBuffer);
   } finally {
-    printWin.close();
+    printWin.destroy();
     if (tempHtml) fs.rmSync(tempHtml.dir, { recursive: true, force: true });
   }
   return fullPath;
@@ -242,51 +344,56 @@ export function registerIpcHandlers(ipcMain, db) {
   ipcMain.handle('app:printHtml', async (event, { html, silent = false, deviceName = null }) => {
     if (!html) throw new Error('No print content provided');
 
-    const printWin = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
+    const printWin = createPrintWindow();
     let tempHtml = null;
     try {
       tempHtml = writeTempHtml(html);
       await printWin.loadFile(tempHtml.filePath);
       await waitForDocumentAssets(printWin);
-      const options = {
-        silent: Boolean(silent),
-        deviceName: deviceName || undefined,
-        printBackground: true,
-      };
 
-      await new Promise((resolve, reject) => {
-        printWin.webContents.print(options, (success, failureReason) => {
-          if (!success) {
-            reject(new Error(failureReason || 'Print failed'));
-            return;
-          }
-          resolve();
-        });
-      });
+      const options = { ...A4_PRINT_OPTIONS, silent: Boolean(silent) };
+
+      if (silent) {
+        // Silent jobs must target a printer that really exists right now;
+        // a stale/renamed printer is a classic "queued but never printed".
+        const printers = await printWin.webContents.getPrintersAsync();
+        const target = deviceName
+          ? printers.find((p) => p.name === deviceName)
+          : printers.find((p) => p.isDefault);
+        if (!target) {
+          throw new Error(deviceName
+            ? `Printer "${deviceName}" was not found. Choose another printer in Settings.`
+            : 'No default printer found. Choose a printer in Settings.');
+        }
+        options.deviceName = target.name;
+      }
+
+      // Silent: timeout protects against a hung spooler.
+      // Dialog: no timeout, the user may take as long as they need.
+      const result = await sendToPrinter(printWin, options, silent ? SILENT_PRINT_TIMEOUT_MS : 0);
+      if (silent && result.success) await delay(1500); // let the spooler take the job before the window goes
+      return result;
     } finally {
-      printWin.close();
+      if (!printWin.isDestroyed()) printWin.destroy();
       if (tempHtml) {
         fs.rmSync(tempHtml.dir, { recursive: true, force: true });
       }
     }
-
-    return { success: true };
   });
 
   /**
    * Renders the given HTML to an A4 PDF, saves it silently (no save dialog)
-   * to ~/Documents/receipts, and opens it with the OS's default PDF viewer.
+   * to ~/Documents/receipts, and opens it in the app's own PDF viewer window.
    * `defaultFileName` should already be a sensible name, e.g. "INV-00001.pdf" -
    * a numeric suffix is appended automatically if that name is already taken.
    */
   ipcMain.handle('app:printPdf', async (event, { html, defaultFileName }) => {
     const fullPath = await createPdfFile(html, defaultFileName);
-
-    const openError = await shell.openPath(fullPath);
+    openPdfInApp(fullPath);
     return {
       filePath: fullPath,
-      opened: !openError,
-      openError: openError || null,
+      opened: true,
+      openError: null,
     };
   });
 

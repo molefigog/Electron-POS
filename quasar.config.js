@@ -183,7 +183,16 @@ export default defineConfig((/* ctx */) => {
         cfg.external = [...(cfg.external || []), 'better-sqlite3']
       }, // 👈 Ensure this closing brace and comma are exactly like this
 
-      // extendPackageJson (json) {},
+      // The renderer (vue, quasar, pinia, xlsx, @quasar/extras...) is already
+      // bundled by Vite, and the main process by esbuild. Only native modules
+      // must ship as real node_modules, so keep just those in the packaged
+      // app instead of installing and bundling every dependency twice.
+      extendPackageJson(json) {
+        const runtimeOnly = ['better-sqlite3']
+        json.dependencies = Object.fromEntries(
+          Object.entries(json.dependencies || {}).filter(([name]) => runtimeOnly.includes(name)),
+        )
+      },
 
       // Electron preload scripts (if any) from /src-electron, WITHOUT file extension
       preloadScripts: ['electron-preload'],
@@ -211,7 +220,20 @@ export default defineConfig((/* ctx */) => {
         directories: {
           output: 'dist/electron',
         },
-        files: ['**/*', '!**/*.map'],
+        asar: true,
+        // Ship only the English Chromium locale packs (saves ~40 MB).
+        electronLanguages: ['en-US'],
+        files: [
+          '**/*',
+          '!**/*.map',
+          '!**/*.md',
+          '!**/*.d.ts',
+          '!**/{test,tests,__tests__,.github,docs,example,examples}/**',
+          // better-sqlite3: keep only the compiled .node binary, not the
+          // SQLite C sources / node-gyp build leftovers.
+          '!**/node_modules/better-sqlite3/{deps,src}/**',
+          '!**/node_modules/better-sqlite3/build/Release/{obj,.deps}/**',
+        ],
         extraResources: [
           {
             from: 'nid-pos.sqlite3',
