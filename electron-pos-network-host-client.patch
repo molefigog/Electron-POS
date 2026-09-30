@@ -1,0 +1,1330 @@
+diff --git a/quasar.config.js b/quasar.config.js
+index d3cc10a..bf8f398 100644
+--- a/quasar.config.js
++++ b/quasar.config.js
+@@ -11,7 +11,7 @@ export default defineConfig((/* ctx */) => {
+     // app boot file (/src/boot)
+     // --> boot files are part of "main.js"
+     // https://v2.quasar.dev/quasar-cli-vite/boot-files
+-    boot: ['pinia', 'electron'],
++    boot: ['pinia', 'electron', 'lan-refresh'],
+ 
+     // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#css
+     css: ['app.scss'],
+diff --git a/src-electron/db/ipc-handlers.js b/src-electron/db/ipc-handlers.js
+index 65eccf8..2999880 100644
+--- a/src-electron/db/ipc-handlers.js
++++ b/src-electron/db/ipc-handlers.js
+@@ -13,6 +13,9 @@ import { promisify } from 'node:util';
+ import { setShortcutMap } from '../shortcuts.js';
+ import { closeDb, getBackupDir, getDbPath, getSafetyDir } from './connection.js';
+ import { MAX_BACKUPS, assertRestorableBackup, createBackup, listBackups, restoreBackupFile } from './backup.js';
++import { lan, clientEndpoint } from '../lan/runtime.js';
++import { remoteCall } from '../lan/lan-client.js';
++import { loadNetworkConfig } from '../lan/network-config.js';
+ 
+ const execFileAsync = promisify(execFile);
+ 
+@@ -200,8 +203,52 @@ async function openOutlookDraft({ to, subject, body, htmlBody }) {
+ }
+ 
+ 
++// ---- Thermal receipts (80 mm roll) ----------------------------------------
++// Runs on the PC that has the receipt printer (the main PC). Other PCs send
++// their receipts there through the LAN server.
++const RECEIPT_WIDTH_MICRONS = 80000; // 80 mm
++const PX_TO_MICRONS = 264.583; // 1 CSS px (96 dpi) in microns
++
++async function printReceiptLocal({ html }) {
++  if (!html) throw new Error('No receipt content provided');
++  const printerName = loadNetworkConfig().receiptPrinter;
++  if (!printerName) throw new Error('No receipt printer is selected on the main PC. Choose one in Settings > Network.');
++
++  const printWin = createPrintWindow();
++  let tempHtml = null;
++  try {
++    tempHtml = writeTempHtml(html);
++    await printWin.loadFile(tempHtml.filePath);
++    await waitForDocumentAssets(printWin);
++
++    const printers = await printWin.webContents.getPrintersAsync();
++    if (!printers.some((p) => p.name === printerName)) {
++      throw new Error(`Receipt printer "${printerName}" was not found. Check it is connected and switched on.`);
++    }
++
++    // A roll has no fixed length: measure the receipt so the printer feeds exactly that much.
++    const heightPx = await printWin.webContents.executeJavaScript('Math.ceil(document.documentElement.scrollHeight)');
++    const heightMicrons = Math.max(50000, Math.ceil(Number(heightPx) * PX_TO_MICRONS) + 5000);
++
++    const result = await sendToPrinter(printWin, {
++      silent: true,
++      printBackground: true,
++      deviceName: printerName,
++      margins: { marginType: 'none' },
++      pageSize: { width: RECEIPT_WIDTH_MICRONS, height: heightMicrons },
++    }, SILENT_PRINT_TIMEOUT_MS);
++    if (result.success) await delay(1500);
++    return result;
++  } finally {
++    if (!printWin.isDestroyed()) printWin.destroy();
++    if (tempHtml) fs.rmSync(tempHtml.dir, { recursive: true, force: true });
++  }
++}
++
+ export function registerIpcHandlers(ipcMain, db) {
+-  const repos = {
++  const isClient = lan.mode === 'client'; // client PCs have no local database: everything goes to the main PC
++
++  const repos = isClient ? null : {
+     products: new ProductRepository(db),
+     categories: new CategoryRepository(db),
+     taxes: new TaxRepository(db),
+@@ -227,8 +274,11 @@ export function registerIpcHandlers(ipcMain, db) {
+     sync: ['pending', 'getCursor', 'enqueue', 'acknowledge'],
+   };
+ 
+-  ipcMain.handle('db:call', async (event, { repository, method, args }) => {
+-    const repo = repos[repository];
++  // Runs a whitelisted repository call on THIS PC's database. The main PC's LAN
++  // server uses the same function for calls that arrive from the other PCs, so
++  // the allow-list below is enforced no matter where the call comes from.
++  async function dispatchDb({ repository, method, args }) {
++    const repo = repos?.[repository];
+     if (!repo) throw new Error(`Unknown repository: ${repository}`);
+     if (!allowList[repository]?.includes(method)) {
+       throw new Error(`Method "${method}" is not allowed on repository "${repository}"`);
+@@ -246,23 +296,38 @@ export function registerIpcHandlers(ipcMain, db) {
+       // Surface a clean message to the renderer instead of a stack trace
+       throw new Error(err.message || 'Database operation failed');
+     }
++  }
++
++  ipcMain.handle('db:call', async (event, payload) => {
++    if (isClient) return remoteCall(clientEndpoint(app.getVersion()), '/rpc/db', payload);
++    return dispatchDb(payload);
++  });
++
++  ipcMain.handle('app:printReceipt', async (event, payload = {}) => {
++    if (isClient) return remoteCall(clientEndpoint(app.getVersion()), '/rpc/print-receipt', { html: payload.html });
++    return printReceiptLocal({ html: payload.html });
+   });
+ 
+   ipcMain.handle('app:getVersion', () => app.getVersion());
+ 
+   // ---- Database backups (see db/backup.js) ----
+-  ipcMain.handle('backup:list', () => ({
++  const CLIENT_BACKUP_MSG = 'Backups are made on the main PC.';
++  const assertNotClient = () => { if (isClient) throw new Error(CLIENT_BACKUP_MSG); };
++
++  ipcMain.handle('backup:list', () => isClient ? { dir: '', max: 0, backups: [], note: CLIENT_BACKUP_MSG } : ({
+     dir: getBackupDir(),
+     max: MAX_BACKUPS,
+     backups: listBackups(getBackupDir()),
+   }));
+ 
+   ipcMain.handle('backup:create', () => {
++    assertNotClient();
+     const result = createBackup(db, getBackupDir());
+     return { name: result.name, size: result.size, dir: getBackupDir() };
+   });
+ 
+   ipcMain.handle('backup:openFolder', async () => {
++    assertNotClient();
+     const dir = getBackupDir();
+     fs.mkdirSync(dir, { recursive: true });
+     const openError = await shell.openPath(dir);
+@@ -271,6 +336,7 @@ export function registerIpcHandlers(ipcMain, db) {
+   });
+ 
+   ipcMain.handle('backup:restore', (event, payload = {}) => {
++    assertNotClient();
+     const fileName = String(payload?.fileName || '');
+     // Validate first (name, file exists, passes integrity check) while the app
+     // is still fully working - a bad request must never close the database.
+@@ -408,4 +474,7 @@ export function registerIpcHandlers(ipcMain, db) {
+       return { html: false };
+     }
+   });
++
++  // The main PC's LAN server uses these to run calls and print receipts for the other PCs.
++  return { dispatchDb, printReceiptLocal };
+ }
+diff --git a/src-electron/electron-main.js b/src-electron/electron-main.js
+index 422b376..700c4d8 100644
+--- a/src-electron/electron-main.js
++++ b/src-electron/electron-main.js
+@@ -6,6 +6,12 @@ import { initDb, getDb, closeDb, getBackupDir, takeRecoveryNotice } from './db/c
+ import { createBackup } from './db/backup.js';
+ import { registerIpcHandlers } from './db/ipc-handlers.js';
+ import { loadShortcutsFromDb, getShortcutMap, comboFromInput } from './shortcuts.js';
++import { lan, clientEndpoint } from './lan/runtime.js';
++import { loadNetworkConfig } from './lan/network-config.js';
++import { registerNetworkIpc } from './lan/network-ipc.js';
++import { createLanServer } from './lan/lan-server.js';
++import { subscribeToChanges } from './lan/lan-client.js';
++import { ensureFirewallRule } from './lan/firewall.js';
+ 
+ // needed in case process is undefined under Linux
+ const platform = process.platform || os.platform();
+@@ -25,12 +31,16 @@ let closeHandlerReady = false;
+ let ackTimer = null;
+ 
+ function backupNow() {
++  // Client PCs have no local database: the main PC does the backups.
++  if (lan.mode === 'client') return null;
+   return createBackup(getDb(), getBackupDir());
+ }
+ 
+ function finishClose() {
+   allowClose = true;
+   clearTimeout(ackTimer);
++  lan.stopEvents?.();
++  lan.server?.close();
+   closeDb();
+   app.quit();
+ }
+@@ -67,7 +77,7 @@ function registerCloseHandlers() {
+   ipcMain.removeHandler('app:confirmClose');
+   ipcMain.handle('app:confirmClose', async (event, options) => {
+     clearTimeout(ackTimer);
+-    const wantsBackup = options?.backup !== false;
++    const wantsBackup = options?.backup !== false && lan.mode !== 'client';
+     if (wantsBackup) {
+       try {
+         backupNow();
+@@ -91,6 +101,7 @@ function registerCloseHandlers() {
+ }
+ 
+ function readBrandingFromDb() {
++  if (lan.mode === 'client') return { companyName: 'My Company' }; // the renderer sets the real name from the main PC's settings
+   const db = getDb();
+   if (!db) return { companyName: 'My Company' };
+ 
+@@ -186,9 +197,41 @@ function applyBranding(branding = {}) {
+ async function createWindow() {
+   // Initialize SQLite (creates file + runs migrations) BEFORE the window loads,
+   // and BEFORE any IPC handlers are registered, so the renderer never races the DB.
+-  await initDb();
+-  loadShortcutsFromDb(getDb());
+-  registerIpcHandlers(ipcMain, getDb());
++  // Network role of this PC: 'single' (own database), 'host' (main PC, serves the
++  // other PCs) or 'client' (no local database, uses the main PC's).
++  lan.config = loadNetworkConfig();
++  lan.mode = lan.config.mode;
++  lan.key = lan.config.key;
++  registerNetworkIpc(ipcMain);
++
++  let handlers;
++  if (lan.mode === 'client') {
++    handlers = registerIpcHandlers(ipcMain, null);
++  } else {
++    await initDb();
++    loadShortcutsFromDb(getDb());
++    handlers = registerIpcHandlers(ipcMain, getDb());
++  }
++
++  if (lan.mode === 'host') {
++    try {
++      lan.server = await createLanServer({
++        port: lan.config.port,
++        getKey: () => lan.key,
++        version: app.getVersion(),
++        hostName: os.hostname(),
++        dispatchDb: handlers.dispatchDb,
++        printReceipt: handlers.printReceiptLocal,
++        onRemoteChange: (info) => mainWindow?.webContents.send('lan:changed', info),
++      });
++      lan.serverError = '';
++      ensureFirewallRule(lan.config.port); // Windows: let other PCs on the private network in
++    } catch (err) {
++      // Not fatal: this PC still works on its own. Settings > Network shows the reason.
++      lan.serverError = String(err?.message || err);
++      console.error('[network] server failed to start:', err);
++    }
++  }
+ 
+   mainWindow = new BrowserWindow({
+     icon: path.resolve(currentDir, 'icons/icon.png'),
+@@ -221,6 +264,17 @@ async function createWindow() {
+     }
+   });
+ 
++  if (lan.mode === 'client') {
++    // Other PCs tell us when data changed, so screens stay fresh without manual refresh.
++    lan.stopEvents = subscribeToChanges(clientEndpoint(app.getVersion()), {
++      onChange: (info) => mainWindow?.webContents.send('lan:changed', info),
++      onStatus: (connected) => {
++        lan.clientConnected = connected;
++        mainWindow?.webContents.send('lan:status', connected);
++      },
++    });
++  }
++
+   if (process.env.DEV) {
+     mainWindow.loadURL(process.env.APP_URL);
+   } else {
+diff --git a/src-electron/electron-preload.js b/src-electron/electron-preload.js
+index 4561cee..140c29e 100644
+--- a/src-electron/electron-preload.js
++++ b/src-electron/electron-preload.js
+@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('appBridge', {
+   printPdf: (options) => ipcRenderer.invoke('app:printPdf', toPlain(options)),
+   emailPdf: (options) => ipcRenderer.invoke('app:emailPdf', toPlain(options)),
+   printHtml: (options) => ipcRenderer.invoke('app:printHtml', toPlain(options)),
++  /** 80 mm thermal receipt. Always prints on the main PC's receipt printer. */
++  printReceipt: (options) => ipcRenderer.invoke('app:printReceipt', toPlain(options)),
+   openCalculator: () => ipcRenderer.invoke('app:openCalculator'),
+   openReceiptsFolder: () => ipcRenderer.invoke('app:openReceiptsFolder'),
+   getPrinters: () => ipcRenderer.invoke('app:getPrinters'),
+@@ -70,3 +72,23 @@ contextBridge.exposeInMainWorld('appBridge', {
+     return () => ipcRenderer.removeListener('shortcut:trigger', listener);
+   },
+ });
++
++/** Network setup (Settings > Network) and live "data changed" notices from the other PCs. */
++contextBridge.exposeInMainWorld('networkBridge', {
++  getConfig: () => ipcRenderer.invoke('network:getConfig'),
++  save: (patch) => ipcRenderer.invoke('network:save', toPlain(patch)),
++  applyCode: (code) => ipcRenderer.invoke('network:applyCode', toPlain({ code })),
++  test: () => ipcRenderer.invoke('network:test'),
++  regenerateKey: () => ipcRenderer.invoke('network:regenerateKey'),
++  restart: () => ipcRenderer.invoke('network:restart'),
++  onChanged: (callback) => {
++    const listener = (_event, info) => callback(info);
++    ipcRenderer.on('lan:changed', listener);
++    return () => ipcRenderer.removeListener('lan:changed', listener);
++  },
++  onStatus: (callback) => {
++    const listener = (_event, connected) => callback(connected);
++    ipcRenderer.on('lan:status', listener);
++    return () => ipcRenderer.removeListener('lan:status', listener);
++  },
++});
+diff --git a/src-electron/lan/firewall.js b/src-electron/lan/firewall.js
+new file mode 100644
+index 0000000..7f7c518
+--- /dev/null
++++ b/src-electron/lan/firewall.js
+@@ -0,0 +1,21 @@
++// Windows only: lets the other PCs on the PRIVATE network reach the main PC's port.
++// The app already runs as administrator, so it can add the rule itself.
++import { execFile } from 'node:child_process';
++
++const RULE_NAME = 'Electron POS (LAN)';
++
++function netsh(args) {
++  return new Promise((resolve) => {
++    execFile('netsh', args, { windowsHide: true }, (err) => resolve(!err));
++  });
++}
++
++export async function ensureFirewallRule(port) {
++  if (process.platform !== 'win32') return false;
++  await netsh(['advfirewall', 'firewall', 'delete', 'rule', `name=${RULE_NAME}`]);
++  return netsh([
++    'advfirewall', 'firewall', 'add', 'rule',
++    `name=${RULE_NAME}`, 'dir=in', 'action=allow', 'protocol=TCP',
++    `localport=${port}`, 'profile=private,domain',
++  ]);
++}
+diff --git a/src-electron/lan/lan-client.js b/src-electron/lan/lan-client.js
+new file mode 100644
+index 0000000..d7d4e86
+--- /dev/null
++++ b/src-electron/lan/lan-client.js
+@@ -0,0 +1,131 @@
++// Runs on the OTHER PCs: talks to the main PC's LAN server.
++// Pure Node (no Electron imports) so it can be tested on its own.
++
++export class LanError extends Error {
++  constructor(message, code) {
++    super(message);
++    this.code = code;
++  }
++}
++
++const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
++
++function headers(ep) {
++  return { 'Content-Type': 'application/json', 'x-pos-key': ep.key, 'x-pos-version': ep.version || '' };
++}
++
++const base = (ep) => `http://${ep.address}:${ep.port}`;
++
++async function request(ep, method, path, body, timeoutMs = 15000) {
++  const controller = new AbortController();
++  const timer = setTimeout(() => controller.abort(), timeoutMs);
++  let res;
++  try {
++    res = await fetch(base(ep) + path, {
++      method,
++      headers: headers(ep),
++      body: body === undefined ? undefined : JSON.stringify(body),
++      signal: controller.signal,
++    });
++  } catch (err) {
++    throw new LanError(
++      err?.name === 'AbortError'
++        ? 'The main PC did not answer in time. Check the network and try again.'
++        : `Cannot reach the main PC at ${ep.address}. Make sure it is switched on, the POS is open there, and both PCs use the same router.`,
++      err?.name === 'AbortError' ? 'TIMEOUT' : 'UNREACHABLE',
++    );
++  } finally {
++    clearTimeout(timer);
++  }
++
++  let data = null;
++  try {
++    data = await res.json();
++  } catch {
++    /* non-JSON response */
++  }
++  if (res.status === 401) throw new LanError(data?.error || 'Wrong access key.', 'UNAUTHORIZED');
++  if (res.status === 409) throw new LanError(data?.error || 'Version mismatch.', 'VERSION_MISMATCH');
++  if (!res.ok || !data) throw new LanError(data?.error || `The main PC returned an error (${res.status}).`, 'BAD_RESPONSE');
++  return data;
++}
++
++/** Sends a call to the main PC. Application errors are re-thrown as plain Errors, like a local call would. */
++export async function remoteCall(ep, path, payload) {
++  const data = await request(ep, 'POST', path, payload);
++  if (!data.ok) throw new Error(data.error || 'Operation failed');
++  return data.result;
++}
++
++/** Checks reachability, access key and version. Resolves details, or throws a LanError. */
++export async function pingHost(ep) {
++  const started = Date.now();
++  const res = await request(ep, 'GET', '/ping', undefined, 5000);
++  if (res.app !== 'nid-pos') throw new LanError('Something answered, but it is not the POS main PC.', 'BAD_RESPONSE');
++  if (!res.authorized) throw new LanError('Wrong access key. Copy the connection code again from the main PC.', 'UNAUTHORIZED');
++  if (res.version !== ep.version) {
++    throw new LanError(
++      `This PC runs version ${ep.version} but the main PC runs ${res.version}. Install the same version on every PC.`,
++      'VERSION_MISMATCH',
++    );
++  }
++  return { ms: Date.now() - started, hostName: res.name || '', hostVersion: res.version };
++}
++
++/**
++ * Listens for "data changed" announcements from the main PC and reconnects
++ * automatically. Returns a stop() function.
++ */
++export function subscribeToChanges(ep, { onChange, onStatus } = {}) {
++  let stopped = false;
++  let controller = null;
++
++  async function loop() {
++    while (!stopped) {
++      controller = new AbortController();
++      let watchdog = null;
++      const arm = () => {
++        clearTimeout(watchdog);
++        watchdog = setTimeout(() => controller.abort(), 45000); // server sends a heartbeat every 15 s
++      };
++      try {
++        arm();
++        const res = await fetch(`${base(ep)}/events`, { headers: headers(ep), signal: controller.signal });
++        if (!res.ok) throw new Error(`status ${res.status}`);
++        onStatus?.(true);
++        const decoder = new TextDecoder();
++        let buffer = '';
++        for await (const chunk of res.body) {
++          arm();
++          buffer += decoder.decode(chunk, { stream: true });
++          let idx;
++          while ((idx = buffer.indexOf('\n\n')) !== -1) {
++            const block = buffer.slice(0, idx);
++            buffer = buffer.slice(idx + 2);
++            const line = block.split('\n').find((l) => l.startsWith('data:'));
++            if (line) {
++              try {
++                onChange?.(JSON.parse(line.slice(5).trim()));
++              } catch {
++                /* ignore malformed event */
++              }
++            }
++          }
++        }
++      } catch {
++        /* fall through to reconnect */
++      } finally {
++        clearTimeout(watchdog);
++      }
++      if (stopped) break;
++      onStatus?.(false);
++      await sleep(3000);
++    }
++  }
++
++  loop();
++  return () => {
++    stopped = true;
++    controller?.abort();
++  };
++}
+diff --git a/src-electron/lan/lan-server.js b/src-electron/lan/lan-server.js
+new file mode 100644
+index 0000000..54aa9bf
+--- /dev/null
++++ b/src-electron/lan/lan-server.js
+@@ -0,0 +1,142 @@
++// Runs on the MAIN PC. Other PCs send their database calls here over the LAN.
++// Pure Node (no Electron imports) so it can be tested on its own.
++import http from 'node:http';
++import crypto from 'node:crypto';
++
++const MAX_BODY_BYTES = 25 * 1024 * 1024;
++const HEARTBEAT_MS = 15000;
++
++// Repository methods that only read. Everything else is a write and is
++// announced to the other PCs so they refresh their screens.
++const READ_ONLY = /^(all|find\w*|history|summary|pending|getCursor)$/;
++
++function safeEqual(a, b) {
++  const x = Buffer.from(String(a ?? ''));
++  const y = Buffer.from(String(b ?? ''));
++  return x.length === y.length && crypto.timingSafeEqual(x, y);
++}
++
++function readBody(req) {
++  return new Promise((resolve, reject) => {
++    const chunks = [];
++    let size = 0;
++    req.on('data', (chunk) => {
++      size += chunk.length;
++      if (size > MAX_BODY_BYTES) {
++        reject(Object.assign(new Error('Request too large'), { status: 413 }));
++        req.destroy();
++        return;
++      }
++      chunks.push(chunk);
++    });
++    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
++    req.on('error', reject);
++  });
++}
++
++function send(res, status, payload) {
++  const body = JSON.stringify(payload);
++  res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
++  res.end(body);
++}
++
++/**
++ * options:
++ *  port        TCP port (0 = pick a free one, used by tests)
++ *  getKey()    current access key
++ *  version     app version; clients on a different version are refused
++ *  hostName    shown to clients
++ *  dispatchDb({ repository, method, args })   runs the database call
++ *  printReceipt({ html })                     prints on this PC's receipt printer
++ *  onRemoteChange(info)                       called after a remote PC changed data
++ */
++export function createLanServer(options) {
++  const { port, getKey, version, hostName = '', dispatchDb, printReceipt, onRemoteChange } = options;
++  const listeners = new Set();
++
++  function broadcast(info) {
++    const line = `data: ${JSON.stringify({ type: 'changed', at: Date.now(), ...info })}\n\n`;
++    for (const res of listeners) res.write(line);
++  }
++
++  const server = http.createServer(async (req, res) => {
++    try {
++      const url = new URL(req.url, 'http://x');
++      const authorized = safeEqual(req.headers['x-pos-key'], getKey());
++
++      if (req.method === 'GET' && url.pathname === '/ping') {
++        return send(res, 200, { app: 'nid-pos', version, name: hostName, authorized });
++      }
++      if (!authorized) {
++        return send(res, 401, { ok: false, code: 'UNAUTHORIZED', error: 'Wrong access key. Pair this PC with the main PC again.' });
++      }
++      if (req.headers['x-pos-version'] !== version) {
++        return send(res, 409, {
++          ok: false,
++          code: 'VERSION_MISMATCH',
++          error: `This PC runs a different version of the POS than the main PC (main PC: ${version}). Install the same version on every PC.`,
++        });
++      }
++
++      if (req.method === 'GET' && url.pathname === '/events') {
++        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
++        res.write(': connected\n\n');
++        const beat = setInterval(() => res.write(': hb\n\n'), HEARTBEAT_MS);
++        listeners.add(res);
++        req.on('close', () => {
++          clearInterval(beat);
++          listeners.delete(res);
++        });
++        return undefined;
++      }
++
++      if (req.method === 'POST' && url.pathname === '/rpc/db') {
++        const payload = JSON.parse(await readBody(req));
++        try {
++          const result = await dispatchDb(payload);
++          if (payload.repository !== 'sync' && !READ_ONLY.test(payload.method)) {
++            const info = { repository: payload.repository, method: payload.method };
++            broadcast(info);
++            onRemoteChange?.(info);
++          }
++          return send(res, 200, { ok: true, result: result === undefined ? null : result });
++        } catch (err) {
++          return send(res, 200, { ok: false, error: err?.message || 'Database operation failed' });
++        }
++      }
++
++      if (req.method === 'POST' && url.pathname === '/rpc/print-receipt') {
++        const payload = JSON.parse(await readBody(req));
++        try {
++          return send(res, 200, { ok: true, result: await printReceipt(payload) });
++        } catch (err) {
++          return send(res, 200, { ok: false, error: err?.message || 'Printing failed' });
++        }
++      }
++
++      return send(res, 404, { ok: false, error: 'Not found' });
++    } catch (err) {
++      return send(res, err?.status || 400, { ok: false, error: err?.message || 'Bad request' });
++    }
++  });
++
++  return new Promise((resolve, reject) => {
++    server.once('error', (err) => {
++      reject(err?.code === 'EADDRINUSE'
++        ? new Error(`Port ${port} is already in use on this PC. Close the other program or choose another port.`)
++        : err);
++    });
++    server.listen(port, '0.0.0.0', () => {
++      resolve({
++        port: server.address().port,
++        broadcast,
++        close: () => {
++          for (const res of listeners) res.end();
++          listeners.clear();
++          server.close();
++          server.closeAllConnections?.();
++        },
++      });
++    });
++  });
++}
+diff --git a/src-electron/lan/network-config.js b/src-electron/lan/network-config.js
+new file mode 100644
+index 0000000..573a298
+--- /dev/null
++++ b/src-electron/lan/network-config.js
+@@ -0,0 +1,57 @@
++// Stores how this PC is set up for networking. Kept in a small JSON file in the
++// user-data folder (NOT in the database, because it decides which database to use).
++import { app, safeStorage } from 'electron';
++import fs from 'node:fs';
++import path from 'node:path';
++import { DEFAULT_PORT } from './pairing.js';
++
++const DEFAULTS = {
++  mode: 'single', // 'single' | 'host' | 'client'
++  port: DEFAULT_PORT,
++  hostAddress: '', // client mode: the main PC's address
++  hostName: '', // client mode: the main PC's name (display only)
++  receiptPrinter: '', // host/single: Windows printer name for 80 mm receipts
++  key: '', // host: the access key it issues; client: the key it was given
++};
++
++const filePath = () => path.join(app.getPath('userData'), 'network-config.json');
++
++function readSecret(raw) {
++  if (raw.keyEnc) {
++    try {
++      return safeStorage.decryptString(Buffer.from(raw.keyEnc, 'base64'));
++    } catch {
++      return ''; // encrypted by another Windows user: the PC must be paired again
++    }
++  }
++  return String(raw.key || '');
++}
++
++export function loadNetworkConfig() {
++  let raw = {};
++  try {
++    raw = JSON.parse(fs.readFileSync(filePath(), 'utf8'));
++  } catch {
++    /* first run */
++  }
++  const cfg = { ...DEFAULTS, ...raw, key: readSecret(raw) };
++  delete cfg.keyEnc;
++  if (!['single', 'host', 'client'].includes(cfg.mode)) cfg.mode = 'single';
++  if (cfg.mode === 'client' && (!cfg.hostAddress || !cfg.key)) cfg.mode = 'single'; // half-paired: fall back safely
++  if (cfg.mode === 'host' && !cfg.key) cfg.mode = 'single';
++  return cfg;
++}
++
++export function saveNetworkConfig(cfg) {
++  const { key, ...rest } = cfg;
++  const out = { ...rest };
++  if (key) {
++    if (safeStorage.isEncryptionAvailable()) out.keyEnc = safeStorage.encryptString(key).toString('base64');
++    else out.key = key;
++  }
++  const target = filePath();
++  fs.mkdirSync(path.dirname(target), { recursive: true });
++  const tmp = `${target}.tmp`;
++  fs.writeFileSync(tmp, JSON.stringify(out, null, 2));
++  fs.renameSync(tmp, target);
++}
+diff --git a/src-electron/lan/network-ipc.js b/src-electron/lan/network-ipc.js
+new file mode 100644
+index 0000000..bd9f0c9
+--- /dev/null
++++ b/src-electron/lan/network-ipc.js
+@@ -0,0 +1,109 @@
++// IPC handlers behind Settings -> Network.
++import { app } from 'electron';
++import os from 'node:os';
++import { lan } from './runtime.js';
++import { loadNetworkConfig, saveNetworkConfig } from './network-config.js';
++import { pingHost } from './lan-client.js';
++import {
++  DEFAULT_PORT, decodeConnectionCode, encodeConnectionCode, generateKey, listLanAddresses,
++} from './pairing.js';
++
++const CHANNELS = ['network:getConfig', 'network:save', 'network:applyCode', 'network:test', 'network:regenerateKey', 'network:restart'];
++
++function view() {
++  const cfg = loadNetworkConfig();
++  const addresses = cfg.mode === 'host' ? listLanAddresses() : [];
++  return {
++    mode: cfg.mode,
++    activeMode: lan.mode, // what is running right now (changes only after a restart)
++    port: cfg.port,
++    hostAddress: cfg.hostAddress,
++    hostName: cfg.hostName,
++    thisPcName: os.hostname(),
++    receiptPrinter: cfg.receiptPrinter,
++    version: app.getVersion(),
++    addresses,
++    connectionCodes: cfg.mode === 'host' && cfg.key
++      ? addresses.map((address) => ({ address, code: encodeConnectionCode({ address, port: cfg.port, key: cfg.key, name: os.hostname() }) }))
++      : [],
++    serverRunning: Boolean(lan.server),
++    serverError: lan.serverError,
++    clientConnected: lan.clientConnected,
++  };
++}
++
++export function registerNetworkIpc(ipcMain) {
++  CHANNELS.forEach((c) => ipcMain.removeHandler(c));
++
++  ipcMain.handle('network:getConfig', () => view());
++
++  ipcMain.handle('network:save', (event, patch = {}) => {
++    const cfg = loadNetworkConfig();
++    const before = { mode: cfg.mode, port: cfg.port };
++
++    if (patch.receiptPrinter !== undefined) cfg.receiptPrinter = String(patch.receiptPrinter || '');
++    if (patch.port !== undefined) {
++      const port = Number(patch.port);
++      if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Port must be a number between 1024 and 65535.');
++      cfg.port = port;
++    }
++    if (patch.mode !== undefined) {
++      if (!['single', 'host', 'client'].includes(patch.mode)) throw new Error('Unknown mode.');
++      if (patch.mode === 'client' && !(cfg.mode === 'client' && cfg.hostAddress && cfg.key)) {
++        throw new Error('Paste the connection code from the main PC and press Connect first.');
++      }
++      // A key belongs to one role. Becoming the main PC always issues a fresh key.
++      if (patch.mode === 'host' && cfg.mode !== 'host') cfg.key = generateKey();
++      if (patch.mode === 'single') cfg.key = '';
++      cfg.mode = patch.mode;
++    }
++    saveNetworkConfig(cfg);
++    return { restartRequired: before.mode !== cfg.mode || before.port !== cfg.port, config: view() };
++  });
++
++  ipcMain.handle('network:applyCode', async (event, { code } = {}) => {
++    const parsed = decodeConnectionCode(code);
++    const info = await pingHost({ address: parsed.address, port: parsed.port, key: parsed.key, version: app.getVersion() });
++    const cfg = loadNetworkConfig();
++    saveNetworkConfig({
++      ...cfg,
++      mode: 'client',
++      hostAddress: parsed.address,
++      port: parsed.port,
++      key: parsed.key,
++      hostName: info.hostName || parsed.name,
++    });
++    return { restartRequired: true, hostName: info.hostName || parsed.name, hostVersion: info.hostVersion };
++  });
++
++  ipcMain.handle('network:test', async () => {
++    const cfg = loadNetworkConfig();
++    if (cfg.mode === 'client') {
++      const info = await pingHost({ address: cfg.hostAddress, port: cfg.port, key: cfg.key, version: app.getVersion() });
++      return { ok: true, ms: info.ms, message: `Connected to ${info.hostName || cfg.hostAddress} (${info.ms} ms)` };
++    }
++    if (cfg.mode === 'host') {
++      return lan.server
++        ? { ok: true, message: `Listening on port ${cfg.port}. Other PCs can connect.` }
++        : { ok: false, message: lan.serverError || 'The network server is not running. Restart the POS.' };
++    }
++    return { ok: true, message: 'This PC works on its own.' };
++  });
++
++  ipcMain.handle('network:regenerateKey', () => {
++    const cfg = loadNetworkConfig();
++    if (cfg.mode !== 'host') throw new Error('Only the main PC issues connection codes.');
++    cfg.key = generateKey();
++    saveNetworkConfig(cfg);
++    lan.key = cfg.key; // running server switches to the new key immediately; paired PCs must reconnect
++    return view();
++  });
++
++  ipcMain.handle('network:restart', () => {
++    // `quasar dev` ties Electron to its dev server, so only relaunch when packaged.
++    if (app.isPackaged) app.relaunch();
++    app.exit(0);
++  });
++}
++
++export { DEFAULT_PORT };
+diff --git a/src-electron/lan/pairing.js b/src-electron/lan/pairing.js
+new file mode 100644
+index 0000000..8e0e5ff
+--- /dev/null
++++ b/src-electron/lan/pairing.js
+@@ -0,0 +1,51 @@
++// Pure helpers (no Electron imports) for pairing PCs on a local network.
++import crypto from 'node:crypto';
++import os from 'node:os';
++
++export const DEFAULT_PORT = 3737;
++const CODE_PREFIX = 'POS1.';
++
++/** Random access key shared by the main PC with the PCs that pair with it. */
++export function generateKey() {
++  return crypto.randomBytes(24).toString('base64url');
++}
++
++/** Private IPv4 addresses of this PC (what other PCs on the same router can reach). */
++export function listLanAddresses() {
++  const out = [];
++  for (const addrs of Object.values(os.networkInterfaces())) {
++    for (const a of addrs || []) {
++      if (a.family !== 'IPv4' || a.internal) continue;
++      if (a.address.startsWith('169.254.')) continue; // link-local, not a real LAN address
++      out.push(a.address);
++    }
++  }
++  return [...new Set(out)];
++}
++
++/** The string the user copies from the main PC and pastes on the other PCs. */
++export function encodeConnectionCode({ address, port, key, name }) {
++  const json = JSON.stringify({ a: address, p: port, k: key, n: name || '' });
++  return CODE_PREFIX + Buffer.from(json, 'utf8').toString('base64url');
++}
++
++/** Validates and decodes a connection code. Throws a friendly Error when it is wrong. */
++export function decodeConnectionCode(code) {
++  const text = String(code || '').trim().replace(/\s+/g, '');
++  if (!text.startsWith(CODE_PREFIX)) {
++    throw new Error('That is not a valid connection code. Copy it again from the main PC.');
++  }
++  let data;
++  try {
++    data = JSON.parse(Buffer.from(text.slice(CODE_PREFIX.length), 'base64url').toString('utf8'));
++  } catch {
++    throw new Error('The connection code is damaged. Copy it again from the main PC.');
++  }
++  const address = String(data?.a || '');
++  const port = Number(data?.p);
++  const key = String(data?.k || '');
++  if (!/^[A-Za-z0-9.\-]{1,253}$/.test(address)) throw new Error('The connection code has an invalid address.');
++  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('The connection code has an invalid port.');
++  if (key.length < 16) throw new Error('The connection code is missing its access key.');
++  return { address, port, key, name: String(data?.n || '') };
++}
+diff --git a/src-electron/lan/runtime.js b/src-electron/lan/runtime.js
+new file mode 100644
+index 0000000..a6e5735
+--- /dev/null
++++ b/src-electron/lan/runtime.js
+@@ -0,0 +1,16 @@
++// Shared, in-memory state for the network feature (one per app process).
++export const lan = {
++  mode: 'single', // 'single' | 'host' | 'client'
++  config: null,
++  key: '',
++  server: null,
++  serverError: '',
++  stopEvents: null,
++  clientConnected: false,
++};
++
++/** Connection details for talking to the main PC (client mode). */
++export function clientEndpoint(version) {
++  const c = lan.config || {};
++  return { address: c.hostAddress, port: c.port, key: lan.key, version };
++}
+diff --git a/src-electron/lan/selftest.mjs b/src-electron/lan/selftest.mjs
+new file mode 100644
+index 0000000..eb9da89
+--- /dev/null
++++ b/src-electron/lan/selftest.mjs
+@@ -0,0 +1,67 @@
++// Run with:  node src-electron/lan/selftest.mjs
++// Exercises the LAN server + client on this machine (no Electron needed).
++import assert from 'node:assert/strict';
++import { createLanServer } from './lan-server.js';
++import { remoteCall, pingHost, subscribeToChanges, LanError } from './lan-client.js';
++import { generateKey, encodeConnectionCode, decodeConnectionCode, listLanAddresses } from './pairing.js';
++
++const key = generateKey();
++const calls = [];
++const printed = [];
++const changes = [];
++
++const server = await createLanServer({
++  port: 0,
++  getKey: () => key,
++  version: '1.2.3',
++  hostName: 'PC3',
++  dispatchDb: async (p) => {
++    calls.push(p);
++    if (p.method === 'boom') throw new Error('Out of stock');
++    return p.method === 'all' ? [{ id: 1, stock_qty: 9 }] : { id: 2 };
++  },
++  printReceipt: async ({ html }) => { printed.push(html); return { success: true }; },
++  onRemoteChange: (i) => changes.push(i),
++});
++const ep = { address: '127.0.0.1', port: server.port, key, version: '1.2.3' };
++
++// pairing code round trip
++const code = encodeConnectionCode({ address: '192.168.1.20', port: 3737, key, name: 'PC3' });
++assert.deepEqual(decodeConnectionCode(code), { address: '192.168.1.20', port: 3737, key, name: 'PC3' });
++assert.throws(() => decodeConnectionCode('garbage'), /not a valid connection code/);
++assert.throws(() => decodeConnectionCode(code.slice(0, -6)), /damaged|invalid|missing/);
++assert.ok(Array.isArray(listLanAddresses()));
++
++// ping: ok, wrong key, wrong version
++assert.equal((await pingHost(ep)).hostName, 'PC3');
++await assert.rejects(pingHost({ ...ep, key: 'x'.repeat(32) }), (e) => e instanceof LanError && e.code === 'UNAUTHORIZED');
++await assert.rejects(pingHost({ ...ep, version: '9.9.9' }), (e) => e.code === 'VERSION_MISMATCH');
++
++// calls: read, write, application error, bad key, version mismatch
++assert.deepEqual(await remoteCall(ep, '/rpc/db', { repository: 'products', method: 'all', args: [] }), [{ id: 1, stock_qty: 9 }]);
++await assert.rejects(remoteCall(ep, '/rpc/db', { repository: 'products', method: 'boom', args: [] }), /Out of stock/);
++await assert.rejects(remoteCall({ ...ep, key: 'y'.repeat(32) }, '/rpc/db', {}), (e) => e.code === 'UNAUTHORIZED');
++await assert.rejects(remoteCall({ ...ep, version: '0.0.1' }, '/rpc/db', {}), (e) => e.code === 'VERSION_MISMATCH');
++
++// change announcements reach a subscriber; reads and the sync repo do not announce
++const seen = [];
++const stop = subscribeToChanges(ep, { onChange: (i) => seen.push(i) });
++await new Promise((r) => setTimeout(r, 300));
++await remoteCall(ep, '/rpc/db', { repository: 'products', method: 'all', args: [] });
++await remoteCall(ep, '/rpc/db', { repository: 'sync', method: 'enqueue', args: [{}] });
++await remoteCall(ep, '/rpc/db', { repository: 'stock', method: 'record', args: [{ qty: -1 }] });
++await new Promise((r) => setTimeout(r, 300));
++stop();
++assert.equal(seen.length, 1);
++assert.equal(seen[0].repository, 'stock');
++assert.equal(changes.length, 1); // only stock.record: reads, failed calls and the sync repo never announce
++
++// receipt printing is routed to the main PC's printer
++assert.deepEqual(await remoteCall(ep, '/rpc/print-receipt', { html: '<p>hi</p>' }), { success: true });
++assert.deepEqual(printed, ['<p>hi</p>']);
++
++// unreachable main PC gives a friendly error
++server.close();
++await assert.rejects(remoteCall(ep, '/rpc/db', {}), (e) => e.code === 'UNREACHABLE' && /Cannot reach the main PC/.test(e.message));
++
++console.log('LAN self-test: all checks passed');
+diff --git a/src/boot/lan-refresh.js b/src/boot/lan-refresh.js
+new file mode 100644
+index 0000000..3f1c6b2
+--- /dev/null
++++ b/src/boot/lan-refresh.js
+@@ -0,0 +1,43 @@
++import { boot } from 'quasar/wrappers'
++import { Notify } from 'quasar'
++import { useProductsStore } from 'src/stores/products'
++import { useCustomersStore } from 'src/stores/customers'
++import { useSuppliersStore } from 'src/stores/suppliers'
++import { useTransactionsStore } from 'src/stores/transactions'
++
++// When another PC changes data, re-load the lists this PC has already opened
++// (using the same filters as before) so prices, stock and quotations stay current.
++export default boot(() => {
++  const bridge = window.networkBridge
++  if (!bridge?.onChanged) return
++
++  let timer = null
++  const refresh = () => {
++    for (const useStore of [useProductsStore, useCustomersStore, useSuppliersStore, useTransactionsStore]) {
++      useStore().refresh?.().catch(() => {})
++    }
++  }
++  bridge.onChanged(() => {
++    clearTimeout(timer)
++    timer = setTimeout(refresh, 800) // several quick changes become one refresh
++  })
++
++  // Tell the cashier when this PC loses / regains the main PC.
++  let dismissOffline = null
++  let wasConnected = null
++  bridge.onStatus?.((connected) => {
++    if (!connected && wasConnected !== false) {
++      dismissOffline = Notify.create({
++        type: 'negative', message: 'Lost connection to the main PC. Trying to reconnect...', timeout: 0, group: 'lan-offline',
++      })
++    } else if (connected) {
++      dismissOffline?.()
++      dismissOffline = null
++      if (wasConnected === false) {
++        Notify.create({ type: 'positive', message: 'Reconnected to the main PC.' })
++        refresh()
++      }
++    }
++    wasConnected = connected
++  })
++})
+diff --git a/src/components/NetworkSettingsCard.vue b/src/components/NetworkSettingsCard.vue
+new file mode 100644
+index 0000000..b355399
+--- /dev/null
++++ b/src/components/NetworkSettingsCard.vue
+@@ -0,0 +1,234 @@
++<template>
++  <q-card v-if="available" flat bordered class="q-mb-md">
++    <q-card-section class="text-subtitle1">Network (several PCs, one database)</q-card-section>
++
++    <q-card-section class="q-gutter-y-md">
++      <q-option-group v-model="mode" :options="modeOptions" color="primary" :disable="busy" />
++
++      <!-- MAIN PC -->
++      <template v-if="mode === 'host'">
++        <q-banner v-if="cfg.activeMode !== 'host'" dense rounded class="bg-blue-1 text-blue-10">
++          Press Save, then restart the POS to turn this PC into the main PC.
++        </q-banner>
++        <q-banner v-else-if="cfg.serverRunning" dense rounded class="bg-green-1 text-green-10">
++          Main PC is running. Other PCs can connect to it.
++        </q-banner>
++        <q-banner v-else dense rounded class="bg-red-1 text-red-10">
++          The network server is not running. {{ cfg.serverError }}
++        </q-banner>
++
++        <q-select
++          v-model="receiptPrinter" :options="printerOptions" emit-value map-options clearable dense outlined
++          label="Receipt printer (80 mm thermal, connected to this PC)" :loading="loadingPrinters"
++        />
++
++        <div v-if="cfg.connectionCodes.length && cfg.activeMode === 'host'" class="q-gutter-y-sm">
++          <div class="text-weight-medium">Connection code for the other PCs</div>
++          <q-select
++            v-if="cfg.connectionCodes.length > 1" v-model="selectedAddress"
++            :options="cfg.connectionCodes.map((c) => c.address)" dense outlined label="This PC's network address"
++          />
++          <q-input :model-value="currentCode" type="textarea" readonly outlined autogrow dense input-class="text-caption" />
++          <div class="row q-gutter-sm">
++            <q-btn dense no-caps color="primary" icon="content_copy" label="Copy code" @click="copyCode" />
++            <q-btn dense no-caps flat color="negative" icon="autorenew" label="Make a new code" @click="confirmRegenerate" />
++          </div>
++          <div class="text-caption text-grey-8">
++            Treat this code like a password. Paste it on each other PC (Settings &rarr; Network &rarr; Connect to the main PC).
++            Keep this PC switched on while the others work, and never forward this port on your router.
++          </div>
++        </div>
++      </template>
++
++      <!-- OTHER PC -->
++      <template v-if="mode === 'client'">
++        <q-banner v-if="cfg.mode === 'client'" dense rounded :class="cfg.clientConnected ? 'bg-green-1 text-green-10' : 'bg-orange-1 text-orange-10'">
++          Paired with main PC <b>{{ cfg.hostName || cfg.hostAddress }}</b>
++          <span v-if="cfg.activeMode === 'client'"> &middot; {{ cfg.clientConnected ? 'connected' : 'trying to reconnect...' }}</span>
++          <span v-else> &middot; restart the POS to start using it</span>
++        </q-banner>
++        <q-input
++          v-model="code" type="textarea" outlined autogrow dense label="Connection code from the main PC"
++          placeholder="POS1...." :disable="busy"
++        />
++        <div class="row q-gutter-sm">
++          <q-btn dense no-caps color="primary" icon="link" label="Connect" :loading="busy" :disable="!code.trim()" @click="connect" />
++          <q-btn v-if="cfg.mode === 'client'" dense no-caps outline color="primary" icon="wifi_find" label="Test connection" :loading="testing" @click="testConnection" />
++        </div>
++        <div class="text-caption text-grey-8">
++          This PC keeps no database of its own: products, customers and quotations live on the main PC, and receipts print on its printer.
++        </div>
++      </template>
++
++      <div class="row q-gutter-sm">
++        <q-btn
++          v-if="mode !== 'client' || cfg.mode === 'client'" dense no-caps color="primary" icon="save" label="Save"
++          :loading="busy" :disable="!dirty" @click="save"
++        />
++        <q-btn v-if="mode === 'host'" dense no-caps outline color="primary" icon="print" label="Print test receipt" :loading="printing" @click="printTest" />
++        <q-btn v-if="mode === 'host'" dense no-caps outline color="primary" icon="wifi_tethering" label="Check server" :loading="testing" @click="testConnection" />
++      </div>
++    </q-card-section>
++  </q-card>
++</template>
++
++<script setup>
++import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
++import { copyToClipboard, useQuasar } from 'quasar';
++
++const $q = useQuasar();
++const bridge = window.networkBridge;
++const available = Boolean(bridge);
++
++const cfg = ref({ mode: 'single', activeMode: 'single', connectionCodes: [], addresses: [] });
++const mode = ref('single');
++const receiptPrinter = ref('');
++const code = ref('');
++const selectedAddress = ref('');
++const printers = ref([]);
++const loadingPrinters = ref(false);
++const busy = ref(false);
++const testing = ref(false);
++const printing = ref(false);
++let offStatus = null;
++
++const modeOptions = [
++  { label: 'This PC works on its own', value: 'single' },
++  { label: 'Main PC: other PCs connect to this PC (keeps the database, prints receipts)', value: 'host' },
++  { label: 'Connect to the main PC', value: 'client' },
++];
++
++const printerOptions = computed(() => printers.value.map((p) => ({ label: p.displayName || p.name, value: p.name })));
++const currentCode = computed(() => {
++  const list = cfg.value.connectionCodes || [];
++  return (list.find((c) => c.address === selectedAddress.value) || list[0])?.code || '';
++});
++const dirty = computed(() => mode.value !== cfg.value.mode || (receiptPrinter.value || '') !== (cfg.value.receiptPrinter || ''));
++
++function cleanError(err) {
++  return String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
++}
++function fail(err) {
++  $q.notify({ type: 'negative', message: cleanError(err), timeout: 6000 });
++}
++function askRestart(message) {
++  $q.dialog({ title: 'Restart required', message, ok: { label: 'Restart now', color: 'primary' }, cancel: { label: 'Later', flat: true } })
++    .onOk(() => bridge.restart());
++}
++
++async function load() {
++  cfg.value = await bridge.getConfig();
++  mode.value = cfg.value.mode;
++  receiptPrinter.value = cfg.value.receiptPrinter || '';
++  selectedAddress.value = cfg.value.connectionCodes?.[0]?.address || '';
++}
++
++async function loadPrinters() {
++  if (!window.appBridge?.getPrinters) return;
++  loadingPrinters.value = true;
++  try {
++    printers.value = await window.appBridge.getPrinters();
++  } catch {
++    printers.value = [];
++  } finally {
++    loadingPrinters.value = false;
++  }
++}
++
++async function save() {
++  busy.value = true;
++  try {
++    const res = await bridge.save({ mode: mode.value, receiptPrinter: receiptPrinter.value || '' });
++    cfg.value = res.config;
++    $q.notify({ type: 'positive', message: 'Network settings saved' });
++    if (res.restartRequired) askRestart('The POS must restart to apply the new network role.');
++  } catch (err) {
++    fail(err);
++  } finally {
++    busy.value = false;
++  }
++}
++
++async function connect() {
++  busy.value = true;
++  try {
++    const res = await bridge.applyCode(code.value);
++    code.value = '';
++    await load();
++    $q.notify({ type: 'positive', message: `Paired with ${res.hostName || 'the main PC'}` });
++    askRestart('This PC is paired. Restart the POS to start using the main PC\'s database.');
++  } catch (err) {
++    fail(err);
++  } finally {
++    busy.value = false;
++  }
++}
++
++async function testConnection() {
++  testing.value = true;
++  try {
++    const res = await bridge.test();
++    $q.notify({ type: res.ok ? 'positive' : 'negative', message: res.message, timeout: 5000 });
++  } catch (err) {
++    fail(err);
++  } finally {
++    testing.value = false;
++  }
++}
++
++async function copyCode() {
++  try {
++    await copyToClipboard(currentCode.value);
++    $q.notify({ type: 'positive', message: 'Connection code copied' });
++  } catch {
++    $q.notify({ type: 'warning', message: 'Could not copy. Select the code and press Ctrl+C.' });
++  }
++}
++
++function confirmRegenerate() {
++  $q.dialog({
++    title: 'Make a new connection code?',
++    message: 'PCs that are already paired will stop working until you paste the new code on them.',
++    ok: { label: 'Make new code', color: 'negative' },
++    cancel: { label: 'Cancel', flat: true },
++  }).onOk(async () => {
++    try {
++      cfg.value = await bridge.regenerateKey();
++      selectedAddress.value = cfg.value.connectionCodes?.[0]?.address || '';
++    } catch (err) {
++      fail(err);
++    }
++  });
++}
++
++function receiptTestHtml() {
++  const when = new Date().toLocaleString();
++  return `<!doctype html><html><head><meta charset="utf-8"><style>
++    *{box-sizing:border-box} body{margin:0;width:80mm;padding:4mm;font:12px/1.4 monospace;color:#000}
++    h1{font-size:15px;text-align:center;margin:0 0 6px} hr{border:0;border-top:1px dashed #000;margin:6px 0}
++    .c{text-align:center}</style></head><body>
++    <h1>TEST RECEIPT</h1><hr>
++    <div>Receipt printer is working.</div><div>${when}</div><hr>
++    <div class="c">0123456789 ABCDEFGHIJ</div><div class="c">Thank you</div></body></html>`;
++}
++
++async function printTest() {
++  printing.value = true;
++  try {
++    if (dirty.value) await bridge.save({ receiptPrinter: receiptPrinter.value || '' });
++    await window.appBridge.printReceipt({ html: receiptTestHtml() });
++    $q.notify({ type: 'positive', message: 'Test receipt sent to the printer' });
++  } catch (err) {
++    fail(err);
++  } finally {
++    printing.value = false;
++  }
++}
++
++onMounted(async () => {
++  if (!available) return;
++  await Promise.all([load(), loadPrinters()]);
++  offStatus = bridge.onStatus?.((connected) => { cfg.value = { ...cfg.value, clientConnected: connected }; });
++});
++onBeforeUnmount(() => offStatus?.());
++</script>
+diff --git a/src/pages/SettingsPage.vue b/src/pages/SettingsPage.vue
+index 608ea3a..1b7edab 100644
+--- a/src/pages/SettingsPage.vue
++++ b/src/pages/SettingsPage.vue
+@@ -274,6 +274,8 @@
+     </q-card>
+ 
+     <q-btn color="primary" label="Save Settings" :loading="saving" @click="save" />
++
++    <NetworkSettingsCard />
+   </q-page>
+ </template>
+ 
+@@ -285,6 +287,7 @@ import { useSettingsStore } from 'src/stores/settings';
+ import { apiClient } from 'src/services/api-client';
+ import { clearSession, connectionState, setConnectionSettings } from 'src/services/connection';
+ import TemplateSwitcher from 'src/components/print-templates/TemplateSwitcher.vue';
++import NetworkSettingsCard from 'src/components/NetworkSettingsCard.vue';
+ import {
+   SHORTCUT_ACTIONS, AVAILABLE_COMBOS, formatCombo, defaultShortcutMap, withDefaults, toActionComboMap,
+ } from 'src/constants/shortcuts';
+diff --git a/src/stores/customers.js b/src/stores/customers.js
+index 80280f0..57dab46 100644
+--- a/src/stores/customers.js
++++ b/src/stores/customers.js
+@@ -13,7 +13,14 @@ export const useCustomersStore = defineStore('customers', {
+   },
+ 
+   actions: {
++    // Re-runs the last fetch with the same filters (used when another PC changes data).
++    async refresh() {
++      if (this._lastFilters === undefined) return;
++      await this.fetchAll(this._lastFilters);
++    },
++
+     async fetchAll(filters = {}) {
++      this._lastFilters = filters;
+       this.loading = true;
+       this.error = null;
+       try {
+diff --git a/src/stores/products.js b/src/stores/products.js
+index 641775d..1b7ba7a 100644
+--- a/src/stores/products.js
++++ b/src/stores/products.js
+@@ -14,7 +14,14 @@ export const useProductsStore = defineStore('products', {
+   },
+ 
+   actions: {
++    // Re-runs the last fetch with the same filters (used when another PC changes data).
++    async refresh() {
++      if (this._lastFilters === undefined) return;
++      await this.fetchAll(this._lastFilters);
++    },
++
+     async fetchAll(filters = {}) {
++      this._lastFilters = filters;
+       // Only the most recent request may write to the store. Without this,
+       // a slow response for an earlier keystroke could land after the latest
+       // one and overwrite it with stale results.
+diff --git a/src/stores/suppliers.js b/src/stores/suppliers.js
+index b18cde2..54ce0c0 100644
+--- a/src/stores/suppliers.js
++++ b/src/stores/suppliers.js
+@@ -5,7 +5,14 @@ export const useSuppliersStore = defineStore('suppliers', {
+     state: () => ({ items: [], loading: false, error: null }),
+     getters: { byId: (state) => (id) => state.items.find((supplier) => supplier.id === id) },
+     actions: {
++        // Re-runs the last fetch with the same filters (used when another PC changes data).
++        async refresh() {
++          if (this._lastFilters === undefined) return;
++          await this.fetchAll(this._lastFilters);
++        },
++
+         async fetchAll(filters = {}) {
++          this._lastFilters = filters;
+             this.loading = true;
+             try { this.items = await SupplierRepository.all(filters); }
+             catch (err) { this.error = err.message; throw err; }
+diff --git a/src/stores/transactions.js b/src/stores/transactions.js
+index 6535ed0..e1ce100 100644
+--- a/src/stores/transactions.js
++++ b/src/stores/transactions.js
+@@ -78,7 +78,14 @@ export const useTransactionsStore = defineStore('transactions', {
+   },
+ 
+   actions: {
++    // Re-runs the last fetch with the same filters (used when another PC changes data).
++    async refresh() {
++      if (this._lastFilters === undefined) return;
++      await this.fetchAll(this._lastFilters);
++    },
++
+     async fetchAll(filters = {}) {
++      this._lastFilters = filters;
+       this.loading = true;
+       this.error = null;
+       try {

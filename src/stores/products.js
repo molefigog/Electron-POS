@@ -14,7 +14,14 @@ export const useProductsStore = defineStore('products', {
   },
 
   actions: {
+    // Re-runs the last fetch with the same filters (used when another PC changes data).
+    async refresh() {
+      if (this._lastFilters === undefined) return;
+      await this.fetchAll(this._lastFilters);
+    },
+
     async fetchAll(filters = {}) {
+      this._lastFilters = filters;
       // Only the most recent request may write to the store. Without this,
       // a slow response for an earlier keystroke could land after the latest
       // one and overwrite it with stale results.

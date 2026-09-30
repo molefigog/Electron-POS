@@ -253,7 +253,8 @@
         <q-item v-for="b in backupInfo.backups" :key="b.name">
           <q-item-section>
             <q-item-label>{{ b.date }}</q-item-label>
-            <q-item-label caption>{{ formatBackupSize(b.size) }} - saved {{ new Date(b.modified).toLocaleString() }}</q-item-label>
+            <q-item-label caption>{{ formatBackupSize(b.size) }} - saved {{ new Date(b.modified).toLocaleString()
+              }}</q-item-label>
           </q-item-section>
           <q-item-section side>
             <q-btn flat dense no-caps color="negative" icon="settings_backup_restore" label="Restore"
@@ -274,6 +275,8 @@
     </q-card>
 
     <q-btn color="primary" label="Save Settings" :loading="saving" @click="save" />
+
+    <NetworkSettingsCard />
   </q-page>
 </template>
 
@@ -285,6 +288,7 @@ import { useSettingsStore } from 'src/stores/settings';
 import { apiClient } from 'src/services/api-client';
 import { clearSession, connectionState, setConnectionSettings } from 'src/services/connection';
 import TemplateSwitcher from 'src/components/print-templates/TemplateSwitcher.vue';
+import NetworkSettingsCard from 'src/components/NetworkSettingsCard.vue';
 import {
   SHORTCUT_ACTIONS, AVAILABLE_COMBOS, formatCombo, defaultShortcutMap, withDefaults, toActionComboMap,
 } from 'src/constants/shortcuts';

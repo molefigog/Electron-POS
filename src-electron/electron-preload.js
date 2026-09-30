@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('appBridge', {
   printPdf: (options) => ipcRenderer.invoke('app:printPdf', toPlain(options)),
   emailPdf: (options) => ipcRenderer.invoke('app:emailPdf', toPlain(options)),
   printHtml: (options) => ipcRenderer.invoke('app:printHtml', toPlain(options)),
+  /** 80 mm thermal receipt. Always prints on the main PC's receipt printer. */
+  printReceipt: (options) => ipcRenderer.invoke('app:printReceipt', toPlain(options)),
   openCalculator: () => ipcRenderer.invoke('app:openCalculator'),
   openReceiptsFolder: () => ipcRenderer.invoke('app:openReceiptsFolder'),
   getPrinters: () => ipcRenderer.invoke('app:getPrinters'),
@@ -68,5 +70,25 @@ contextBridge.exposeInMainWorld('appBridge', {
     const listener = (_event, actionId) => callback(actionId);
     ipcRenderer.on('shortcut:trigger', listener);
     return () => ipcRenderer.removeListener('shortcut:trigger', listener);
+  },
+});
+
+/** Network setup (Settings > Network) and live "data changed" notices from the other PCs. */
+contextBridge.exposeInMainWorld('networkBridge', {
+  getConfig: () => ipcRenderer.invoke('network:getConfig'),
+  save: (patch) => ipcRenderer.invoke('network:save', toPlain(patch)),
+  applyCode: (code) => ipcRenderer.invoke('network:applyCode', toPlain({ code })),
+  test: () => ipcRenderer.invoke('network:test'),
+  regenerateKey: () => ipcRenderer.invoke('network:regenerateKey'),
+  restart: () => ipcRenderer.invoke('network:restart'),
+  onChanged: (callback) => {
+    const listener = (_event, info) => callback(info);
+    ipcRenderer.on('lan:changed', listener);
+    return () => ipcRenderer.removeListener('lan:changed', listener);
+  },
+  onStatus: (callback) => {
+    const listener = (_event, connected) => callback(connected);
+    ipcRenderer.on('lan:status', listener);
+    return () => ipcRenderer.removeListener('lan:status', listener);
   },
 });

@@ -13,6 +13,9 @@ import { promisify } from 'node:util';
 import { setShortcutMap } from '../shortcuts.js';
 import { closeDb, getBackupDir, getDbPath, getSafetyDir } from './connection.js';
 import { MAX_BACKUPS, assertRestorableBackup, createBackup, listBackups, restoreBackupFile } from './backup.js';
+import { lan, clientEndpoint } from '../lan/runtime.js';
+import { remoteCall } from '../lan/lan-client.js';
+import { loadNetworkConfig } from '../lan/network-config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -200,8 +203,52 @@ async function openOutlookDraft({ to, subject, body, htmlBody }) {
 }
 
 
+// ---- Thermal receipts (80 mm roll) ----------------------------------------
+// Runs on the PC that has the receipt printer (the main PC). Other PCs send
+// their receipts there through the LAN server.
+const RECEIPT_WIDTH_MICRONS = 80000; // 80 mm
+const PX_TO_MICRONS = 264.583; // 1 CSS px (96 dpi) in microns
+
+async function printReceiptLocal({ html }) {
+  if (!html) throw new Error('No receipt content provided');
+  const printerName = loadNetworkConfig().receiptPrinter;
+  if (!printerName) throw new Error('No receipt printer is selected on the main PC. Choose one in Settings > Network.');
+
+  const printWin = createPrintWindow();
+  let tempHtml = null;
+  try {
+    tempHtml = writeTempHtml(html);
+    await printWin.loadFile(tempHtml.filePath);
+    await waitForDocumentAssets(printWin);
+
+    const printers = await printWin.webContents.getPrintersAsync();
+    if (!printers.some((p) => p.name === printerName)) {
+      throw new Error(`Receipt printer "${printerName}" was not found. Check it is connected and switched on.`);
+    }
+
+    // A roll has no fixed length: measure the receipt so the printer feeds exactly that much.
+    const heightPx = await printWin.webContents.executeJavaScript('Math.ceil(document.documentElement.scrollHeight)');
+    const heightMicrons = Math.max(50000, Math.ceil(Number(heightPx) * PX_TO_MICRONS) + 5000);
+
+    const result = await sendToPrinter(printWin, {
+      silent: true,
+      printBackground: true,
+      deviceName: printerName,
+      margins: { marginType: 'none' },
+      pageSize: { width: RECEIPT_WIDTH_MICRONS, height: heightMicrons },
+    }, SILENT_PRINT_TIMEOUT_MS);
+    if (result.success) await delay(1500);
+    return result;
+  } finally {
+    if (!printWin.isDestroyed()) printWin.destroy();
+    if (tempHtml) fs.rmSync(tempHtml.dir, { recursive: true, force: true });
+  }
+}
+
 export function registerIpcHandlers(ipcMain, db) {
-  const repos = {
+  const isClient = lan.mode === 'client'; // client PCs have no local database: everything goes to the main PC
+
+  const repos = isClient ? null : {
     products: new ProductRepository(db),
     categories: new CategoryRepository(db),
     taxes: new TaxRepository(db),
@@ -227,8 +274,11 @@ export function registerIpcHandlers(ipcMain, db) {
     sync: ['pending', 'getCursor', 'enqueue', 'acknowledge'],
   };
 
-  ipcMain.handle('db:call', async (event, { repository, method, args }) => {
-    const repo = repos[repository];
+  // Runs a whitelisted repository call on THIS PC's database. The main PC's LAN
+  // server uses the same function for calls that arrive from the other PCs, so
+  // the allow-list below is enforced no matter where the call comes from.
+  async function dispatchDb({ repository, method, args }) {
+    const repo = repos?.[repository];
     if (!repo) throw new Error(`Unknown repository: ${repository}`);
     if (!allowList[repository]?.includes(method)) {
       throw new Error(`Method "${method}" is not allowed on repository "${repository}"`);
@@ -246,23 +296,38 @@ export function registerIpcHandlers(ipcMain, db) {
       // Surface a clean message to the renderer instead of a stack trace
       throw new Error(err.message || 'Database operation failed');
     }
+  }
+
+  ipcMain.handle('db:call', async (event, payload) => {
+    if (isClient) return remoteCall(clientEndpoint(app.getVersion()), '/rpc/db', payload);
+    return dispatchDb(payload);
+  });
+
+  ipcMain.handle('app:printReceipt', async (event, payload = {}) => {
+    if (isClient) return remoteCall(clientEndpoint(app.getVersion()), '/rpc/print-receipt', { html: payload.html });
+    return printReceiptLocal({ html: payload.html });
   });
 
   ipcMain.handle('app:getVersion', () => app.getVersion());
 
   // ---- Database backups (see db/backup.js) ----
-  ipcMain.handle('backup:list', () => ({
+  const CLIENT_BACKUP_MSG = 'Backups are made on the main PC.';
+  const assertNotClient = () => { if (isClient) throw new Error(CLIENT_BACKUP_MSG); };
+
+  ipcMain.handle('backup:list', () => isClient ? { dir: '', max: 0, backups: [], note: CLIENT_BACKUP_MSG } : ({
     dir: getBackupDir(),
     max: MAX_BACKUPS,
     backups: listBackups(getBackupDir()),
   }));
 
   ipcMain.handle('backup:create', () => {
+    assertNotClient();
     const result = createBackup(db, getBackupDir());
     return { name: result.name, size: result.size, dir: getBackupDir() };
   });
 
   ipcMain.handle('backup:openFolder', async () => {
+    assertNotClient();
     const dir = getBackupDir();
     fs.mkdirSync(dir, { recursive: true });
     const openError = await shell.openPath(dir);
@@ -271,6 +336,7 @@ export function registerIpcHandlers(ipcMain, db) {
   });
 
   ipcMain.handle('backup:restore', (event, payload = {}) => {
+    assertNotClient();
     const fileName = String(payload?.fileName || '');
     // Validate first (name, file exists, passes integrity check) while the app
     // is still fully working - a bad request must never close the database.
@@ -408,4 +474,7 @@ export function registerIpcHandlers(ipcMain, db) {
       return { html: false };
     }
   });
+
+  // The main PC's LAN server uses these to run calls and print receipts for the other PCs.
+  return { dispatchDb, printReceiptLocal };
 }

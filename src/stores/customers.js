@@ -13,7 +13,14 @@ export const useCustomersStore = defineStore('customers', {
   },
 
   actions: {
+    // Re-runs the last fetch with the same filters (used when another PC changes data).
+    async refresh() {
+      if (this._lastFilters === undefined) return;
+      await this.fetchAll(this._lastFilters);
+    },
+
     async fetchAll(filters = {}) {
+      this._lastFilters = filters;
       this.loading = true;
       this.error = null;
       try {

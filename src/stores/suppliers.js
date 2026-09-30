@@ -5,7 +5,14 @@ export const useSuppliersStore = defineStore('suppliers', {
     state: () => ({ items: [], loading: false, error: null }),
     getters: { byId: (state) => (id) => state.items.find((supplier) => supplier.id === id) },
     actions: {
+        // Re-runs the last fetch with the same filters (used when another PC changes data).
+        async refresh() {
+          if (this._lastFilters === undefined) return;
+          await this.fetchAll(this._lastFilters);
+        },
+
         async fetchAll(filters = {}) {
+          this._lastFilters = filters;
             this.loading = true;
             try { this.items = await SupplierRepository.all(filters); }
             catch (err) { this.error = err.message; throw err; }

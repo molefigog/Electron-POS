@@ -6,6 +6,12 @@ import { initDb, getDb, closeDb, getBackupDir, takeRecoveryNotice } from './db/c
 import { createBackup } from './db/backup.js';
 import { registerIpcHandlers } from './db/ipc-handlers.js';
 import { loadShortcutsFromDb, getShortcutMap, comboFromInput } from './shortcuts.js';
+import { lan, clientEndpoint } from './lan/runtime.js';
+import { loadNetworkConfig } from './lan/network-config.js';
+import { registerNetworkIpc } from './lan/network-ipc.js';
+import { createLanServer } from './lan/lan-server.js';
+import { subscribeToChanges } from './lan/lan-client.js';
+import { ensureFirewallRule } from './lan/firewall.js';
 
 // needed in case process is undefined under Linux
 const platform = process.platform || os.platform();
@@ -25,12 +31,16 @@ let closeHandlerReady = false;
 let ackTimer = null;
 
 function backupNow() {
+  // Client PCs have no local database: the main PC does the backups.
+  if (lan.mode === 'client') return null;
   return createBackup(getDb(), getBackupDir());
 }
 
 function finishClose() {
   allowClose = true;
   clearTimeout(ackTimer);
+  lan.stopEvents?.();
+  lan.server?.close();
   closeDb();
   app.quit();
 }
@@ -67,7 +77,7 @@ function registerCloseHandlers() {
   ipcMain.removeHandler('app:confirmClose');
   ipcMain.handle('app:confirmClose', async (event, options) => {
     clearTimeout(ackTimer);
-    const wantsBackup = options?.backup !== false;
+    const wantsBackup = options?.backup !== false && lan.mode !== 'client';
     if (wantsBackup) {
       try {
         backupNow();
@@ -91,6 +101,7 @@ function registerCloseHandlers() {
 }
 
 function readBrandingFromDb() {
+  if (lan.mode === 'client') return { companyName: 'My Company' }; // the renderer sets the real name from the main PC's settings
   const db = getDb();
   if (!db) return { companyName: 'My Company' };
 
@@ -186,9 +197,41 @@ function applyBranding(branding = {}) {
 async function createWindow() {
   // Initialize SQLite (creates file + runs migrations) BEFORE the window loads,
   // and BEFORE any IPC handlers are registered, so the renderer never races the DB.
-  await initDb();
-  loadShortcutsFromDb(getDb());
-  registerIpcHandlers(ipcMain, getDb());
+  // Network role of this PC: 'single' (own database), 'host' (main PC, serves the
+  // other PCs) or 'client' (no local database, uses the main PC's).
+  lan.config = loadNetworkConfig();
+  lan.mode = lan.config.mode;
+  lan.key = lan.config.key;
+  registerNetworkIpc(ipcMain);
+
+  let handlers;
+  if (lan.mode === 'client') {
+    handlers = registerIpcHandlers(ipcMain, null);
+  } else {
+    await initDb();
+    loadShortcutsFromDb(getDb());
+    handlers = registerIpcHandlers(ipcMain, getDb());
+  }
+
+  if (lan.mode === 'host') {
+    try {
+      lan.server = await createLanServer({
+        port: lan.config.port,
+        getKey: () => lan.key,
+        version: app.getVersion(),
+        hostName: os.hostname(),
+        dispatchDb: handlers.dispatchDb,
+        printReceipt: handlers.printReceiptLocal,
+        onRemoteChange: (info) => mainWindow?.webContents.send('lan:changed', info),
+      });
+      lan.serverError = '';
+      ensureFirewallRule(lan.config.port); // Windows: let other PCs on the private network in
+    } catch (err) {
+      // Not fatal: this PC still works on its own. Settings > Network shows the reason.
+      lan.serverError = String(err?.message || err);
+      console.error('[network] server failed to start:', err);
+    }
+  }
 
   mainWindow = new BrowserWindow({
     icon: path.resolve(currentDir, 'icons/icon.png'),
@@ -220,6 +263,17 @@ async function createWindow() {
       mainWindow.webContents.send('shortcut:trigger', action);
     }
   });
+
+  if (lan.mode === 'client') {
+    // Other PCs tell us when data changed, so screens stay fresh without manual refresh.
+    lan.stopEvents = subscribeToChanges(clientEndpoint(app.getVersion()), {
+      onChange: (info) => mainWindow?.webContents.send('lan:changed', info),
+      onStatus: (connected) => {
+        lan.clientConnected = connected;
+        mainWindow?.webContents.send('lan:status', connected);
+      },
+    });
+  }
 
   if (process.env.DEV) {
     mainWindow.loadURL(process.env.APP_URL);
