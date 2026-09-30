@@ -842,7 +842,7 @@ index 0000000..8e0e5ff
 +  const address = String(data?.a || '');
 +  const port = Number(data?.p);
 +  const key = String(data?.k || '');
-+  if (!/^[A-Za-z0-9.\-]{1,253}$/.test(address)) throw new Error('The connection code has an invalid address.');
++  if (!/^[A-Za-z0-9.-]{1,253}$/.test(address)) throw new Error('The connection code has an invalid address.');
 +  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('The connection code has an invalid port.');
 +  if (key.length < 16) throw new Error('The connection code is missing its access key.');
 +  return { address, port, key, name: String(data?.n || '') };

@@ -1,282 +1,325 @@
 <template>
   <q-page class="q-pa-md">
-    <div class="text-h5 q-mb-md">Settings</div>
 
-    <q-card flat bordered class="q-mb-md">
-      <q-card-section class="text-subtitle1">Company Logo</q-card-section>
-      <q-card-section class="row items-center q-col-gutter-md">
-        <div class="col-auto">
-          <div class="logo-preview" v-if="form.company_logo">
-            <img :src="form.company_logo" alt="Logo preview" />
-          </div>
-          <div class="logo-preview logo-preview-empty" v-else>No logo</div>
-        </div>
-        <div class="col">
-          <q-file v-model="logoFile" label="Upload logo" filled accept=".jpg,.jpeg,.png,.svg,.webp"
-            max-file-size="1048576" @update:model-value="onLogoSelected" @rejected="onLogoRejected">
-            <template #prepend><q-icon name="image" /></template>
-          </q-file>
-          <div class="text-caption text-grey q-mt-xs">PNG, JPG, SVG, or WebP — max 1MB. Shown on every printed quotation
-            and
-            invoice.</div>
-          <q-btn v-if="form.company_logo" flat dense color="negative" label="Remove logo" class="q-mt-xs"
-            @click="removeLogo" />
-        </div>
-      </q-card-section>
-    </q-card>
 
-    <q-card flat bordered class="q-mb-md">
-      <q-card-section class="text-subtitle1">Company Stamp</q-card-section>
-      <q-card-section class="row items-center q-col-gutter-md">
-        <div class="col-auto">
-          <div class="logo-preview" v-if="form.company_stamp">
-            <img :src="form.company_stamp" alt="Stamp preview" />
-          </div>
-          <div class="logo-preview logo-preview-empty" v-else>No stamp</div>
-        </div>
-        <div class="col">
-          <q-file v-model="stampFile" label="Upload stamp" filled accept=".jpg,.jpeg,.png,.webp" max-file-size="2097152"
-            @update:model-value="onStampSelected" @rejected="onStampRejected">
-            <template #prepend><q-icon name="approval" /></template>
-          </q-file>
-          <div class="text-caption text-grey q-mt-xs">PNG, JPG, or WebP - max 2MB. Used on printed business letters.
-          </div>
-          <q-btn v-if="form.company_stamp" flat dense color="negative" label="Remove stamp" class="q-mt-xs"
-            @click="removeStamp" />
-        </div>
-      </q-card-section>
-    </q-card>
+    <div class="q-mb-md" :class="$q.dark.isActive ? 'bg-dark' : 'bg-white'"
+      style="position: sticky; top: 50px; z-index: 10; margin-left: -16px; margin-right: -16px; padding: 0 16px; border-bottom: 1px solid rgba(128,128,128,.25)">
+      <q-tabs v-model="tab" dense align="left" class="text-grey-7" active-color="primary" indicator-color="primary"
+        narrow-indicator outside-arrows mobile-arrows>
+        <q-tab name="company" icon="business" label="Company" no-caps />
+        <q-tab name="documents" icon="description" label="Documents" no-caps />
+        <q-tab name="printing" icon="print" label="Printing" no-caps />
+        <q-tab name="system" icon="settings" label="System" no-caps />
+        <q-tab name="shortcuts" icon="keyboard" label="Shortcuts" no-caps />
+      </q-tabs>
+    </div>
 
-    <q-card flat bordered class="q-mb-md">
-      <q-card-section class="text-subtitle1">Company Information</q-card-section>
-      <q-card-section class="q-gutter-y-md">
-        <q-input v-model="form.company_name" label="Company Name" filled />
-        <q-input v-model="form.company_address" label="Address" filled type="textarea" autogrow />
-        <div class="row q-col-gutter-sm">
-          <div class="col-6"><q-input v-model="form.company_phone" label="Phone" filled /></div>
-          <div class="col-6"><q-input v-model="form.company_email" label="Email" filled /></div>
-        </div>
-        <q-input v-model="form.company_website" label="Website" filled />
-        <q-input v-model="form.company_vat" label="VAT / Tax Number" filled />
-        <q-input v-model="form.company_ibr" label="IBR Number" filled
-          hint="Shown next to the VAT number on quotations, invoices and purchase orders" />
-        <q-input v-model="form.currency_symbol" label="Currency Symbol" filled style="max-width: 160px" />
-      </q-card-section>
-    </q-card>
+    <div>
 
-    <q-card flat bordered class="q-mb-md">
-      <q-card-section class="text-subtitle1">Tax</q-card-section>
-      <q-card-section class="q-gutter-sm">
-        <div class="text-caption text-grey">
-          Product prices are treated as <strong>tax-inclusive</strong> everywhere in the app — what you enter as a
-          product's selling price is exactly what the customer pays; tax is calculated out of that price, never added
-          on top. This default rate applies to any product that doesn't have its own tax assigned under Products.
-        </div>
-        <q-input v-model.number="form.default_tax_rate" type="number" label="Default Tax Rate (%)" filled min="0"
-          max="100" step="0.5" style="max-width: 220px" />
-      </q-card-section>
-    </q-card>
-
-    <q-card flat bordered class="q-mb-md">
-      <q-card-section class="text-subtitle1">Document Letterhead &amp; Footer</q-card-section>
-      <q-card-section class="q-gutter-sm">
-        <div class="text-caption text-grey">
-          The company info above is shown as a letterhead at the top of every printed quotation and invoice.
-          Add payment details (bank account), mobile money details, and a closing note to appear at the bottom, next to
-          the
-          totals.
-        </div>
-        <q-input v-model="form.payment_details" label="Bank / Payment Details" filled type="textarea" autogrow
-          hint="e.g. Bank: ABC Bank, Acct: 1234567890" />
-        <q-input v-model="form.mobile_money_details" label="Mobile Money Details" filled type="textarea" autogrow
-          hint="e.g. M-Pesa: 12345, Ecocash: 67890" />
-        <q-input v-model="form.footer_note" label="Footer Note" filled hint="e.g. Thank you for your business!" />
-        <q-toggle v-model="form.show_signature_block" label="Show signature block on printed documents" />
-        <template v-if="form.show_signature_block">
-          <div class="row q-col-gutter-sm">
-            <div class="col-6">
-              <q-input v-model="form.signature_label_manager" label="Left Signature Label" filled
-                hint="e.g. Manager / Authorized Person" />
+      <!-- ============ COMPANY ============ -->
+      <div v-show="tab === 'company'">
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section class="text-subtitle1">Company Logo</q-card-section>
+          <q-card-section class="row items-center q-col-gutter-md">
+            <div class="col-auto">
+              <div class="logo-preview" v-if="form.company_logo">
+                <img :src="form.company_logo" alt="Logo preview" />
+              </div>
+              <div class="logo-preview logo-preview-empty" v-else>No logo</div>
             </div>
-            <div class="col-6">
-              <q-input v-model="form.signature_label_customer" label="Right Signature Label" filled
-                hint="e.g. Customer / Client" />
+            <div class="col">
+              <q-file v-model="logoFile" label="Upload logo" filled accept=".jpg,.jpeg,.png,.svg,.webp"
+                max-file-size="1048576" @update:model-value="onLogoSelected" @rejected="onLogoRejected">
+                <template #prepend><q-icon name="image" /></template>
+              </q-file>
+              <div class="text-caption text-grey q-mt-xs">PNG, JPG, SVG, or WebP — max 1MB. Shown on every printed
+                quotation
+                and
+                invoice.</div>
+              <q-btn v-if="form.company_logo" flat dense color="negative" label="Remove logo" class="q-mt-xs"
+                @click="removeLogo" />
             </div>
-          </div>
-          <q-input v-model="form.signature_note" label="Signature Note" filled
-            hint="e.g. This serves as invoice claim" />
-        </template>
-      </q-card-section>
-    </q-card>
+          </q-card-section>
+        </q-card>
 
-    <q-card flat bordered class="q-mb-md">
-      <q-card-section class="text-subtitle1">Default Print Template</q-card-section>
-      <q-card-section>
-        <div class="text-caption text-grey q-mt-sm">
-          Applies to new prints and PDF exports. You can still switch templates per-document from the Transactions
-          screen.
-        </div>
-        <div class="row q-col-gutter-sm">
-          <div class="col-6">
-            <TemplateSwitcher v-model="form.print_template" />
-          </div>
-          <div class="col-6">
-            <q-input v-model.number="form.items_per_page" type="number" label="Items Per Page" filled min="1" max="100"
-              hint="How many line items fit on one printed sheet before it splits to a new page" />
-          </div>
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section class="text-subtitle1">Company Stamp</q-card-section>
+          <q-card-section class="row items-center q-col-gutter-md">
+            <div class="col-auto">
+              <div class="logo-preview" v-if="form.company_stamp">
+                <img :src="form.company_stamp" alt="Stamp preview" />
+              </div>
+              <div class="logo-preview logo-preview-empty" v-else>No stamp</div>
+            </div>
+            <div class="col">
+              <q-file v-model="stampFile" label="Upload stamp" filled accept=".jpg,.jpeg,.png,.webp"
+                max-file-size="2097152" @update:model-value="onStampSelected" @rejected="onStampRejected">
+                <template #prepend><q-icon name="approval" /></template>
+              </q-file>
+              <div class="text-caption text-grey q-mt-xs">PNG, JPG, or WebP - max 2MB. Used on printed business
+                letters.
+              </div>
+              <q-btn v-if="form.company_stamp" flat dense color="negative" label="Remove stamp" class="q-mt-xs"
+                @click="removeStamp" />
+            </div>
+          </q-card-section>
+        </q-card>
 
-        </div>
-      </q-card-section>
-    </q-card>
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section class="text-subtitle1">Company Information</q-card-section>
+          <q-card-section class="q-gutter-y-md">
+            <q-input v-model="form.company_name" label="Company Name" filled />
+            <q-input v-model="form.company_address" label="Address" filled type="textarea" autogrow />
+            <div class="row q-col-gutter-sm">
+              <div class="col-6"><q-input v-model="form.company_phone" label="Phone" filled /></div>
+              <div class="col-6"><q-input v-model="form.company_email" label="Email" filled /></div>
+            </div>
+            <q-input v-model="form.company_website" label="Website" filled />
+            <q-input v-model="form.company_vat" label="VAT / Tax Number" filled />
+            <q-input v-model="form.company_ibr" label="IBR Number" filled
+              hint="Shown next to the VAT number on quotations, invoices and purchase orders" />
+            <q-input v-model="form.currency_symbol" label="Currency Symbol" filled style="max-width: 160px" />
+          </q-card-section>
+        </q-card>
 
-    <q-card flat bordered class="q-mb-md">
-      <q-card-section class="text-subtitle1">Printing</q-card-section>
-      <q-card-section class="q-gutter-md">
-        <div class="row q-col-gutter-md items-end settings-grid-row">
-          <div class="col-12 col-sm-6 col-md-4">
-            <q-input v-model.number="form.print_font_size" type="number" filled min="8" max="24" step="0.5"
-              label="Print Font Size (px)" hint="Base size used across all print templates" />
-          </div>
-          <div class="col-12 col-sm-6 col-md-4">
-            <q-select v-model="form.print_font_weight" :options="fontWeightOptions" emit-value map-options filled
-              label="Print Font Weight" hint="Default body text weight for all templates" />
-          </div>
-          <div class="col-12 col-md-4">
-            <q-btn flat no-caps icon="refresh" label="Refresh Printers" :loading="loadingPrinters"
-              class="settings-grid-row__btn" @click="loadPrinters" />
-          </div>
-        </div>
-
-        <div class="row q-col-gutter-md items-start settings-grid-row">
-          <div class="col-12 col-md-4">
-            <q-select v-model="form.print_date_format" :options="dateFormatOptions" emit-value map-options filled
-              label="Date Format" hint="How dates appear on quotations, invoices, purchase orders and reports" />
-          </div>
-          <div class="col-12 col-md-8">
-            <div class="text-caption text-grey">Colour Intensity (toner saver): {{ form.print_color_intensity }}%</div>
-            <q-slider v-model="form.print_color_intensity" :min="20" :max="100" :step="5" label color="primary" />
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section class="text-subtitle1">Tax</q-card-section>
+          <q-card-section class="q-gutter-sm">
             <div class="text-caption text-grey">
-              100% = full colour. Lower values print the top bar, table header and Total bar as a pale tint with an
-              outline and dark text, which uses much less toner.
+              Product prices are treated as <strong>tax-inclusive</strong> everywhere in the app — what you enter as a
+              product's selling price is exactly what the customer pays; tax is calculated out of that price, never
+              added
+              on top. This default rate applies to any product that doesn't have its own tax assigned under Products.
             </div>
-          </div>
-        </div>
+            <q-input v-model.number="form.default_tax_rate" type="number" label="Default Tax Rate (%)" filled min="0"
+              max="100" step="0.5" style="max-width: 220px" />
+          </q-card-section>
+        </q-card>
+      </div>
 
-        <div class="row q-col-gutter-md items-end settings-grid-row">
-          <div class="col-12">
-            <q-select v-model="form.default_printer" :options="printerOptions" emit-value map-options filled clearable
-              label="Default Printer" :loading="loadingPrinters" hint="Used when silent printing is enabled" />
-          </div>
-        </div>
-
-        <q-toggle v-model="form.silent_printing" label="Enable Silent Printing"
-          hint="When enabled with a default printer, print jobs go directly to that printer without showing the print dialog." />
-      </q-card-section>
-    </q-card>
-
-    <q-card flat bordered class="q-mb-md">
-      <q-card-section class="text-subtitle1">Appearance</q-card-section>
-      <q-card-section>
-        <q-option-group v-model="form.theme_mode" type="radio" color="primary" :options="[
-          { label: 'System (match Windows theme)', value: 'system' },
-          { label: 'Light', value: 'light' },
-          { label: 'Dark', value: 'dark' }
-        ]" />
-      </q-card-section>
-    </q-card>
-
-    <q-card flat bordered class="q-mb-md">
-      <q-card-section class="text-subtitle1">Data Connection</q-card-section>
-      <q-card-section class="q-gutter-md">
-        <q-option-group v-model="form.data_mode" type="radio" color="primary" :options="[
-          { label: 'Local SQLite (works offline)', value: 'local' },
-          { label: 'Hosted API (requires sign-in)', value: 'api' }
-        ]" />
-        <q-input v-model="form.api_url" label="API URL" filled placeholder="https://example.com" />
-        <div v-if="form.data_mode === 'api'" class="row q-col-gutter-sm items-end">
-          <div class="col-12 col-sm-5"><q-input v-model="apiEmail" label="Email" filled type="email" /></div>
-          <div class="col-12 col-sm-5"><q-input v-model="apiPassword" label="Password" filled type="password" /></div>
-          <div class="col-12 col-sm-2"><q-btn color="primary" icon="login" label="Sign in" :loading="authenticating"
-              class="full-width" @click="signIn" /></div>
-        </div>
-        <div class="row items-center q-gutter-sm">
-          <q-chip :color="connectionState.authenticated ? 'positive' : 'grey-6'" text-color="white" dense>
-            {{ connectionState.authenticated ? 'Signed in' : 'Not signed in' }}
-          </q-chip>
-          <q-btn v-if="connectionState.authenticated" flat no-caps label="Sign out" icon="logout" @click="signOut" />
-        </div>
-        <div class="text-caption text-grey">Changing this setting affects this device only. Use Sync in the toolbar to
-          upload offline changes.</div>
-      </q-card-section>
-    </q-card>
-
-    <q-card flat bordered class="q-mb-md">
-      <q-card-section class="row items-center">
-        <div class="text-subtitle1">Keyboard Shortcuts</div>
-        <q-space />
-        <q-btn flat dense no-caps icon="restart_alt" label="Reset to Defaults" @click="resetShortcuts" />
-      </q-card-section>
-      <q-card-section>
-        <div class="text-caption text-grey q-mb-sm">
-          Fast, mouse-free cart entry. Combos are Ctrl or Shift plus a number key, and work anywhere in the app -
-          even while a text field is focused. Assign the same combo to two actions and the newest one wins, so keep
-          each combo unique.
-        </div>
-        <div v-for="group in shortcutGroups" :key="group.name" class="shortcut-group">
-          <div class="shortcut-group__title">{{ group.name }}</div>
-          <div class="row q-col-gutter-sm">
-            <div class="col-12 col-sm-6" v-for="action in group.actions" :key="action.id">
-              <q-select v-model="form.shortcutsByAction[action.id]" :options="comboOptions" emit-value map-options
-                filled dense :label="action.label" clearable />
+      <!-- ============ DOCUMENTS ============ -->
+      <div v-show="tab === 'documents'">
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section class="text-subtitle1">Document Letterhead &amp; Footer</q-card-section>
+          <q-card-section class="q-gutter-sm">
+            <div class="text-caption text-grey">
+              The company info above is shown as a letterhead at the top of every printed quotation and invoice.
+              Add payment details (bank account), mobile money details, and a closing note to appear at the bottom,
+              next to
+              the
+              totals.
             </div>
-          </div>
-        </div>
-      </q-card-section>
-    </q-card>
+            <q-input v-model="form.payment_details" label="Bank / Payment Details" filled type="textarea" autogrow
+              hint="e.g. Bank: ABC Bank, Acct: 1234567890" />
+            <q-input v-model="form.mobile_money_details" label="Mobile Money Details" filled type="textarea" autogrow
+              hint="e.g. M-Pesa: 12345, Ecocash: 67890" />
+            <q-input v-model="form.footer_note" label="Footer Note" filled hint="e.g. Thank you for your business!" />
+            <q-toggle v-model="form.show_signature_block" label="Show signature block on printed documents" />
+            <template v-if="form.show_signature_block">
+              <div class="row q-col-gutter-sm">
+                <div class="col-6">
+                  <q-input v-model="form.signature_label_manager" label="Left Signature Label" filled
+                    hint="e.g. Manager / Authorized Person" />
+                </div>
+                <div class="col-6">
+                  <q-input v-model="form.signature_label_customer" label="Right Signature Label" filled
+                    hint="e.g. Customer / Client" />
+                </div>
+              </div>
+              <q-input v-model="form.signature_note" label="Signature Note" filled
+                hint="e.g. This serves as invoice claim" />
+            </template>
+          </q-card-section>
+        </q-card>
 
-    <q-card v-if="hasBackupBridge" flat bordered class="q-mb-md">
-      <q-card-section class="row items-center">
-        <div class="text-subtitle1 col">Database Backup &amp; Recovery</div>
-        <q-btn flat dense no-caps icon="folder_open" label="Open folder" class="q-mr-sm" @click="openBackupFolder" />
-        <q-btn color="primary" dense no-caps icon="backup" label="Back up now" :loading="backingUp"
-          @click="backUpNow" />
-      </q-card-section>
-      <q-card-section class="q-pt-none">
-        <div class="text-caption text-grey">
-          A backup is made every day when you close the POS (after you confirm the save prompt). The last
-          {{ backupInfo.max }} days are kept. If the database is ever damaged, the newest healthy backup is
-          restored automatically on the next start.
-        </div>
-        <div class="text-caption text-grey q-mt-xs">Folder: {{ backupInfo.dir || '-' }}</div>
-      </q-card-section>
-      <q-list v-if="backupInfo.backups.length" separator>
-        <q-item v-for="b in backupInfo.backups" :key="b.name">
-          <q-item-section>
-            <q-item-label>{{ b.date }}</q-item-label>
-            <q-item-label caption>{{ formatBackupSize(b.size) }} - saved {{ new Date(b.modified).toLocaleString()
-              }}</q-item-label>
-          </q-item-section>
-          <q-item-section side>
-            <q-btn flat dense no-caps color="negative" icon="settings_backup_restore" label="Restore"
-              @click="confirmRestore(b)" />
-          </q-item-section>
-        </q-item>
-      </q-list>
-      <q-card-section v-else class="text-caption text-grey">No backups yet - press "Back up now".</q-card-section>
-    </q-card>
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section class="text-subtitle1">Document Numbering</q-card-section>
+          <q-card-section class="row q-col-gutter-sm">
+            <div class="col-4"><q-input v-model="form.quote_prefix" label="Quotation Prefix" filled /></div>
+            <div class="col-4"><q-input v-model="form.invoice_prefix" label="Invoice Prefix" filled /></div>
+            <div class="col-4"><q-input v-model="form.purchase_order_prefix" label="Purchase Order Prefix" filled />
+            </div>
+          </q-card-section>
+        </q-card>
+      </div>
 
-    <q-card flat bordered class="q-mb-md">
-      <q-card-section class="text-subtitle1">Document Numbering</q-card-section>
-      <q-card-section class="row q-col-gutter-sm">
-        <div class="col-4"><q-input v-model="form.quote_prefix" label="Quotation Prefix" filled /></div>
-        <div class="col-4"><q-input v-model="form.invoice_prefix" label="Invoice Prefix" filled /></div>
-        <div class="col-4"><q-input v-model="form.purchase_order_prefix" label="Purchase Order Prefix" filled /></div>
-      </q-card-section>
-    </q-card>
+      <!-- ============ PRINTING ============ -->
+      <div v-show="tab === 'printing'">
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section class="text-subtitle1">Default Print Template</q-card-section>
+          <q-card-section>
+            <div class="text-caption text-grey q-mt-sm">
+              Applies to new prints and PDF exports. You can still switch templates per-document from the Transactions
+              screen.
+            </div>
+            <div class="row q-col-gutter-sm">
+              <div class="col-6">
+                <TemplateSwitcher v-model="form.print_template" />
+              </div>
+              <div class="col-6">
+                <q-input v-model.number="form.items_per_page" type="number" label="Items Per Page" filled min="1"
+                  max="100" hint="How many line items fit on one printed sheet before it splits to a new page" />
+              </div>
 
+            </div>
+          </q-card-section>
+        </q-card>
+
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section class="text-subtitle1">Printing</q-card-section>
+          <q-card-section class="q-gutter-md">
+            <div class="row q-col-gutter-md items-end settings-grid-row">
+              <div class="col-12 col-sm-6 col-md-4">
+                <q-input v-model.number="form.print_font_size" type="number" filled min="8" max="24" step="0.5"
+                  label="Print Font Size (px)" hint="Base size used across all print templates" />
+              </div>
+              <div class="col-12 col-sm-6 col-md-4">
+                <q-select v-model="form.print_font_weight" :options="fontWeightOptions" emit-value map-options filled
+                  label="Print Font Weight" hint="Default body text weight for all templates" />
+              </div>
+              <div class="col-12 col-md-4">
+                <q-btn flat no-caps icon="refresh" label="Refresh Printers" :loading="loadingPrinters"
+                  class="settings-grid-row__btn" @click="loadPrinters" />
+              </div>
+            </div>
+
+            <div class="row q-col-gutter-md items-start settings-grid-row">
+              <div class="col-12 col-md-4">
+                <q-select v-model="form.print_date_format" :options="dateFormatOptions" emit-value map-options filled
+                  label="Date Format" hint="How dates appear on quotations, invoices, purchase orders and reports" />
+              </div>
+              <div class="col-12 col-md-8">
+                <div class="text-caption text-grey">Colour Intensity (toner saver): {{ form.print_color_intensity }}%
+                </div>
+                <q-slider v-model="form.print_color_intensity" :min="20" :max="100" :step="5" label color="primary" />
+                <div class="text-caption text-grey">
+                  100% = full colour. Lower values print the top bar, table header and Total bar as a pale tint with an
+                  outline and dark text, which uses much less toner.
+                </div>
+              </div>
+            </div>
+
+            <div class="row q-col-gutter-md items-end settings-grid-row">
+              <div class="col-12">
+                <q-select v-model="form.default_printer" :options="printerOptions" emit-value map-options filled
+                  clearable label="Default Printer" :loading="loadingPrinters"
+                  hint="Used when silent printing is enabled" />
+              </div>
+            </div>
+
+            <q-toggle v-model="form.silent_printing" label="Enable Silent Printing"
+              hint="When enabled with a default printer, print jobs go directly to that printer without showing the print dialog." />
+          </q-card-section>
+        </q-card>
+      </div>
+
+      <!-- ============ SYSTEM ============ -->
+      <div v-show="tab === 'system'">
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section class="text-subtitle1">Appearance</q-card-section>
+          <q-card-section>
+            <q-option-group v-model="form.theme_mode" type="radio" color="primary" :options="[
+              { label: 'System (match Windows theme)', value: 'system' },
+              { label: 'Light', value: 'light' },
+              { label: 'Dark', value: 'dark' }
+            ]" />
+          </q-card-section>
+        </q-card>
+
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section class="text-subtitle1">Data Connection</q-card-section>
+          <q-card-section class="q-gutter-md">
+            <q-option-group v-model="form.data_mode" type="radio" color="primary" :options="[
+              { label: 'Local SQLite (works offline)', value: 'local' },
+              { label: 'Hosted API (requires sign-in)', value: 'api' }
+            ]" />
+            <q-input v-model="form.api_url" label="API URL" filled placeholder="https://example.com" />
+            <div v-if="form.data_mode === 'api'" class="row q-col-gutter-sm items-end">
+              <div class="col-12 col-sm-5"><q-input v-model="apiEmail" label="Email" filled type="email" /></div>
+              <div class="col-12 col-sm-5"><q-input v-model="apiPassword" label="Password" filled type="password" />
+              </div>
+              <div class="col-12 col-sm-2"><q-btn color="primary" icon="login" label="Sign in" :loading="authenticating"
+                  class="full-width" @click="signIn" /></div>
+            </div>
+            <div class="row items-center q-gutter-sm">
+              <q-chip :color="connectionState.authenticated ? 'positive' : 'grey-6'" text-color="white" dense>
+                {{ connectionState.authenticated ? 'Signed in' : 'Not signed in' }}
+              </q-chip>
+              <q-btn v-if="connectionState.authenticated" flat no-caps label="Sign out" icon="logout"
+                @click="signOut" />
+            </div>
+            <div class="text-caption text-grey">Changing this setting affects this device only. Use Sync in the
+              toolbar to
+              upload offline changes.</div>
+          </q-card-section>
+        </q-card>
+
+        <q-card v-if="hasBackupBridge" flat bordered class="q-mb-md">
+          <q-card-section class="row items-center">
+            <div class="text-subtitle1 col">Database Backup &amp; Recovery</div>
+            <q-btn flat dense no-caps icon="folder_open" label="Open folder" class="q-mr-sm"
+              @click="openBackupFolder" />
+            <q-btn color="primary" dense no-caps icon="backup" label="Back up now" :loading="backingUp"
+              @click="backUpNow" />
+          </q-card-section>
+          <q-card-section class="q-pt-none">
+            <div class="text-caption text-grey">
+              A backup is made every day when you close the POS (after you confirm the save prompt). The last
+              {{ backupInfo.max }} days are kept. If the database is ever damaged, the newest healthy backup is
+              restored automatically on the next start.
+            </div>
+            <div class="text-caption text-grey q-mt-xs">Folder: {{ backupInfo.dir || '-' }}</div>
+          </q-card-section>
+          <q-list v-if="backupInfo.backups.length" separator>
+            <q-item v-for="b in backupInfo.backups" :key="b.name">
+              <q-item-section>
+                <q-item-label>{{ b.date }}</q-item-label>
+                <q-item-label caption>{{ formatBackupSize(b.size) }} - saved {{ new Date(b.modified).toLocaleString()
+                }}</q-item-label>
+              </q-item-section>
+              <q-item-section side>
+                <q-btn flat dense no-caps color="negative" icon="settings_backup_restore" label="Restore"
+                  @click="confirmRestore(b)" />
+              </q-item-section>
+            </q-item>
+          </q-list>
+          <q-card-section v-else class="text-caption text-grey">No backups yet - press "Back up now".</q-card-section>
+        </q-card>
+
+        <NetworkSettingsCard />
+      </div>
+
+      <!-- ============ SHORTCUTS ============ -->
+      <div v-show="tab === 'shortcuts'">
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section class="row items-center">
+            <div class="text-subtitle1">Keyboard Shortcuts</div>
+            <q-space />
+            <q-btn flat dense no-caps icon="restart_alt" label="Reset to Defaults" @click="resetShortcuts" />
+          </q-card-section>
+          <q-card-section>
+            <div class="text-caption text-grey q-mb-sm">
+              Fast, mouse-free cart entry. Combos are Ctrl or Shift plus a number key, and work anywhere in the app -
+              even while a text field is focused. Assign the same combo to two actions and the newest one wins, so keep
+              each combo unique.
+            </div>
+            <div v-for="group in shortcutGroups" :key="group.name" class="shortcut-group">
+              <div class="shortcut-group__title">{{ group.name }}</div>
+              <div class="row q-col-gutter-sm">
+                <div class="col-12 col-sm-6" v-for="action in group.actions" :key="action.id">
+                  <q-select v-model="form.shortcutsByAction[action.id]" :options="comboOptions" emit-value map-options
+                    filled dense :label="action.label" clearable />
+                </div>
+              </div>
+            </div>
+          </q-card-section>
+        </q-card>
+      </div>
+
+    </div>
+
+    <!-- Save stays outside the tabs so it is always visible and saves every tab at once -->
     <q-btn color="primary" label="Save Settings" :loading="saving" @click="save" />
-
-    <NetworkSettingsCard />
   </q-page>
 </template>
 
@@ -296,7 +339,7 @@ import {
 const $q = useQuasar();
 const settingsStore = useSettingsStore();
 const saving = ref(false);
-
+const tab = ref('company')
 // --- Database backups (Electron only) ---
 const hasBackupBridge = Boolean(window.appBridge?.backups);
 const backingUp = ref(false);
