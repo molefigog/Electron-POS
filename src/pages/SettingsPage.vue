@@ -211,6 +211,8 @@
               hint="When enabled with a default printer, print jobs go directly to that printer without showing the print dialog." />
           </q-card-section>
         </q-card>
+        <ReceiptPrinterCard v-model:template="form.thermal_template"
+          v-model:shortcut="form.shortcutsByAction.print_receipt" />
       </div>
 
       <!-- ============ SYSTEM ============ -->
@@ -332,6 +334,7 @@ import { apiClient } from 'src/services/api-client';
 import { clearSession, connectionState, setConnectionSettings } from 'src/services/connection';
 import TemplateSwitcher from 'src/components/print-templates/TemplateSwitcher.vue';
 import NetworkSettingsCard from 'src/components/NetworkSettingsCard.vue';
+import ReceiptPrinterCard from 'src/components/ReceiptPrinterCard.vue';
 import {
   SHORTCUT_ACTIONS, AVAILABLE_COMBOS, formatCombo, defaultShortcutMap, withDefaults, toActionComboMap,
 } from 'src/constants/shortcuts';
@@ -449,6 +452,7 @@ const form = reactive({
   print_color_intensity: 100,
   default_printer: '',
   silent_printing: false,
+  thermal_template: 'compact',
   theme_mode: 'system',
   data_mode: 'local',
   api_url: '',
@@ -575,6 +579,7 @@ async function save() {
       print_color_intensity: String(form.print_color_intensity),
       items_per_page: String(form.items_per_page),
       default_printer: form.default_printer || '',
+      thermal_template: form.thermal_template === 'detailed' ? 'detailed' : 'compact',
       silent_printing: String(!!form.silent_printing),
       show_signature_block: String(!!form.show_signature_block),
       keyboard_shortcuts: JSON.stringify(comboToAction),
@@ -622,6 +627,7 @@ onMounted(async () => {
   form.print_color_intensity = Number(settingsStore.values.print_color_intensity || 100);
   form.items_per_page = Number(settingsStore.values.items_per_page || 18);
   form.silent_printing = String(settingsStore.values.silent_printing || 'false') === 'true';
+  form.thermal_template = settingsStore.values.thermal_template === 'detailed' ? 'detailed' : 'compact';
   form.show_signature_block = String(settingsStore.values.show_signature_block || 'false') === 'true';
   form.data_mode = connectionState.mode;
   form.api_url = connectionState.apiUrl;

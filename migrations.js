@@ -391,6 +391,48 @@ const migrations = [
       db.exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('company_ibr', '')`)
     },
   },
+  {
+    version: 15,
+    name: 'add_amount_tendered_to_transactions',
+    up: (db) => {
+      // POS cash sales: the cash handed over by the customer. NULL for every
+      // other document. Change is never stored - it is amount_tendered - grand_total.
+      const columns = new Set(
+        db
+          .prepare(`PRAGMA table_info(transactions)`)
+          .all()
+          .map((c) => c.name),
+      )
+      if (!columns.has('amount_tendered')) {
+        db.exec(`ALTER TABLE transactions ADD COLUMN amount_tendered REAL`)
+      }
+    },
+  },
+  {
+    version: 16,
+    name: 'add_transaction_payments',
+    up: (db) => {
+      // How a POS sale was paid. One row per payment method used, so a sale can
+      // be split (e.g. SpeedPoint + cash). `amount` is what the customer handed
+      // over by that method; the change is taken out of the cash part.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS transaction_payments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+          method TEXT NOT NULL CHECK (method IN ('cash','speedpoint','eft','ecocash','mpesa','cheque')),
+          amount REAL NOT NULL CHECK (amount >= 0)
+        );
+        CREATE INDEX IF NOT EXISTS idx_transaction_payments_tx ON transaction_payments(transaction_id);
+      `)
+      // POS sales made before this migration were all cash.
+      db.exec(`
+        INSERT INTO transaction_payments (transaction_id, method, amount)
+        SELECT id, 'cash', amount_tendered FROM transactions
+        WHERE type = 'invoice' AND amount_tendered IS NOT NULL
+          AND id NOT IN (SELECT transaction_id FROM transaction_payments)
+      `)
+    },
+  },
 ]
 
 export function runMigrations(db) {

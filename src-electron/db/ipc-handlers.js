@@ -208,6 +208,9 @@ async function openOutlookDraft({ to, subject, body, htmlBody }) {
 // their receipts there through the LAN server.
 const RECEIPT_WIDTH_MICRONS = 80000; // 80 mm
 const PX_TO_MICRONS = 264.583; // 1 CSS px (96 dpi) in microns
+// Paper fed past the last line. Receipt cutters sit ~1 cm after the print head, so without
+// this the last lines (total, change, note) can be sliced off or never reach the paper.
+const RECEIPT_FEED_MICRONS = 10000; // 10 mm
 
 async function printReceiptLocal({ html }) {
   if (!html) throw new Error('No receipt content provided');
@@ -227,8 +230,15 @@ async function printReceiptLocal({ html }) {
     }
 
     // A roll has no fixed length: measure the receipt so the printer feeds exactly that much.
-    const heightPx = await printWin.webContents.executeJavaScript('Math.ceil(document.documentElement.scrollHeight)');
-    const heightMicrons = Math.max(50000, Math.ceil(Number(heightPx) * PX_TO_MICRONS) + 5000);
+    const heightPx = await printWin.webContents.executeJavaScript(
+      `(() => {
+        const b = document.body;
+        const d = document.documentElement;
+        return Math.ceil(Math.max(d.scrollHeight, b.scrollHeight, b.offsetHeight, b.getBoundingClientRect().bottom));
+      })()`,
+    );
+    const heightMicrons = Math.max(50000, Math.ceil(Number(heightPx) * PX_TO_MICRONS) + RECEIPT_FEED_MICRONS);
+    console.log(`[receipt] printer="${printerName}" content=${heightPx}px page=${(RECEIPT_WIDTH_MICRONS / 1000).toFixed(0)}x${(heightMicrons / 1000).toFixed(1)}mm`);
 
     const result = await sendToPrinter(printWin, {
       silent: true,
@@ -269,7 +279,7 @@ export function registerIpcHandlers(ipcMain, db) {
     customers: ['all', 'find', 'create', 'update', 'delete'],
     suppliers: ['all', 'find', 'create', 'update', 'delete'],
     stock: ['history', 'summary', 'record'],
-    transactions: ['all', 'find', 'create', 'update', 'delete', 'convertQuoteToInvoice'],
+    transactions: ['all', 'find', 'create', 'update', 'delete', 'convertQuoteToInvoice', 'endOfDay'],
     settings: ['all', 'update'],
     sync: ['pending', 'getCursor', 'enqueue', 'acknowledge'],
   };

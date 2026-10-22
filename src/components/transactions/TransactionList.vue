@@ -30,6 +30,19 @@
         <q-td :props="props" class="q-gutter-x-xs">
           <q-btn dense flat round icon="edit" @click="edit(props.row)" />
           <q-btn dense flat round icon="print" @click="printRow(props.row)" />
+          <q-btn dense flat round icon="receipt_long">
+            <q-tooltip>Print thermal receipt</q-tooltip>
+            <q-menu auto-close>
+              <q-list dense style="min-width: 190px">
+                <q-item v-for="(t, key) in THERMAL_TEMPLATES" :key="key" clickable @click="printReceiptRow(props.row, key)">
+                  <q-item-section>
+                    <q-item-label>{{ t.label }} receipt</q-item-label>
+                    <q-item-label caption>{{ t.hint }}</q-item-label>
+                  </q-item-section>
+                </q-item>
+              </q-list>
+            </q-menu>
+          </q-btn>
           <q-btn dense flat round icon="picture_as_pdf" @click="exportRow(props.row)" />
           <q-btn dense flat round icon="email" @click="emailRow(props.row)">
             <q-tooltip>Email document</q-tooltip>
@@ -70,12 +83,15 @@ import { ref, onMounted } from 'vue';
 import { useQuasar } from 'quasar';
 import { useTransactionsStore } from 'src/stores/transactions';
 import { usePrintDocument } from 'src/composables/usePrintDocument';
+import { useThermalReceipt } from 'src/composables/useThermalReceipt';
+import { THERMAL_TEMPLATES } from 'src/services/print-templates/thermal';
 import { useCurrency } from 'src/composables/useCurrency';
 
 const emit = defineEmits(['edit']);
 const $q = useQuasar();
 const transactionsStore = useTransactionsStore();
 const { print, exportPdf, emailPdf } = usePrintDocument();
+const { printReceipt } = useThermalReceipt();
 const { format } = useCurrency();
 
 const search = ref('');
@@ -146,6 +162,16 @@ async function printRow(row) {
     await print(full);
   } catch (err) {
     $q.notify({ type: 'negative', message: err.message || 'Could not print document' });
+  }
+}
+
+async function printReceiptRow(row, templateKey) {
+  try {
+    const full = await transactionsStore.fetchOne(row.id);
+    await printReceipt(full, templateKey);
+    $q.notify({ type: 'positive', message: 'Receipt sent to the printer', timeout: 1200 });
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message || 'Could not print receipt' });
   }
 }
 

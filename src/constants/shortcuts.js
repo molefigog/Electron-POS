@@ -22,6 +22,8 @@ export const SHORTCUT_ACTIONS = [
   { id: 'focus_sku', label: 'Focus SKU / Barcode Field', group: 'Cart', default: 'ctrl+4' },
   { id: 'add_customer', label: 'Add New Customer', group: 'Cart', default: 'ctrl+5' },
   { id: 'remove_active_row', label: 'Remove Selected Cart Row', group: 'Cart', default: 'ctrl+6' },
+
+  { id: 'print_receipt', label: 'Print Receipt (POS printer)', group: 'Print', default: 'ctrl+7' },
 ];
 
 /** All valid combos: ctrl/shift + 0-9, e.g. "ctrl+1", "shift+7". Used to populate the picker in Settings. */

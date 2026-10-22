@@ -3,6 +3,7 @@
     <div class="row items-center justify-between q-mb-md">
       <div class="text-h5">Reports</div>
       <div class="row q-gutter-sm">
+        <q-btn color="secondary" icon="point_of_sale" label="End of Day" @click="showEndOfDay = true" />
         <q-btn outline icon="print" label="Print" @click="printReport" />
         <q-btn color="primary" icon="picture_as_pdf" label="Save PDF" :loading="savingPdf" @click="savePdf" />
       </div>
@@ -45,6 +46,8 @@
     </div>
 
     <q-table flat bordered :rows="filteredRows" :columns="columns" row-key="id" />
+
+    <EndOfDayDialog v-model="showEndOfDay" />
   </q-page>
 </template>
 
@@ -56,6 +59,7 @@ import { useSettingsStore } from 'src/stores/settings';
 import { useCurrency } from 'src/composables/useCurrency';
 import { usePrintDocument } from 'src/composables/usePrintDocument';
 import { renderReportDocument } from 'src/services/print-templates/report';
+import EndOfDayDialog from 'src/components/EndOfDayDialog.vue';
 
 const $q = useQuasar();
 const transactionsStore = useTransactionsStore();
@@ -66,6 +70,7 @@ const { printHtml } = usePrintDocument();
 const from = ref('');
 const to = ref('');
 const savingPdf = ref(false);
+const showEndOfDay = ref(false);
 
 const columns = [
   { name: 'number', label: 'Number', field: 'number', align: 'left' },

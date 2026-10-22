@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import TransactionRepository from 'src/services/repositories/TransactionRepository';
 import { useProductsStore } from './products';
 import { useSettingsStore } from './settings';
+import { PAYMENT_METHODS } from 'src/constants/payments';
 
 /** 'YYYY-MM-DD' for today, matching the format a native date input uses. */
 function todayISODate() {
@@ -26,7 +27,28 @@ function emptyDraft() {
     issuedAt: todayISODate(), // defaults to today; user can pick another date before saving
     notes: '',
     discountTotal: 0,
+    posMode: false, // POS sale: an invoice with a cash tender (see MainLayout "POS" button)
+    amountTendered: '', // POS only: cash handed over when paying by cash alone ('' until typed)
+    payMethods: [], // POS only: ticked payment methods; none ticked = cash
+    payAmounts: {}, // POS only: { [method]: amount } when two or more methods are ticked (split payment)
     lineItems: [], // { product_id, name, quantity, box_size?, box_count?, unit_price, discount_pct, tax_rate }
+  };
+}
+
+/** Restores the payment inputs of a saved POS sale into the draft shape. */
+function paymentsToDraft(tx) {
+  const payments = Array.isArray(tx.payments) ? tx.payments : [];
+  if (!payments.length) {
+    return { amountTendered: tx.amount_tendered ?? '', payMethods: [], payAmounts: {} };
+  }
+  if (payments.length === 1) {
+    const [only] = payments;
+    return { amountTendered: only.method === 'cash' ? only.amount : '', payMethods: only.method === 'cash' ? [] : [only.method], payAmounts: {} };
+  }
+  return {
+    amountTendered: '',
+    payMethods: payments.map((p) => p.method),
+    payAmounts: Object.fromEntries(payments.map((p) => [p.method, p.amount])),
   };
 }
 
@@ -69,6 +91,55 @@ export const useTransactionsStore = defineStore('transactions', {
     /** Tax-exclusive base, shown only as a receipt breakdown line - never the amount charged. */
     draftSubtotal() {
       return this.draftGrossSubtotal - this.draftTaxTotal;
+    },
+
+    /** Ticked payment methods in screen order; cash when nothing is ticked. */
+    draftPayMethods(state) {
+      const ticked = PAYMENT_METHODS.map((m) => m.value).filter((m) => (state.draft.payMethods || []).includes(m));
+      return ticked.length ? ticked : ['cash'];
+    },
+
+    /**
+     * What the customer hands over, per method: [{ method, amount }].
+     * One non-cash method = exactly the total (no change possible); cash alone = the
+     * typed Tendered box; two or more methods = the typed amount for each.
+     */
+    draftPayments() {
+      const methods = this.draftPayMethods;
+      if (methods.length === 1) {
+        const [method] = methods;
+        if (method !== 'cash') {
+          const exact = Math.round(this.draftGrandTotal * 100) / 100;
+          return exact > 0 ? [{ method, amount: exact }] : [];
+        }
+        const raw = this.draft.amountTendered;
+        const n = raw === '' || raw === null || raw === undefined ? NaN : Number(raw);
+        return Number.isFinite(n) && n > 0 ? [{ method, amount: n }] : [];
+      }
+      return methods
+        .map((method) => ({ method, amount: Number(this.draft.payAmounts?.[method]) || 0 }))
+        .filter((p) => p.amount > 0);
+    },
+
+    /** POS sale: total handed over across all methods (null until something is entered). */
+    draftTendered() {
+      const payments = this.draftPayments;
+      if (!payments.length) return null;
+      return Math.round(payments.reduce((sum, p) => sum + p.amount, 0) * 100) / 100;
+    },
+
+    /** Change to give back. Negative means the customer has not handed over enough yet; null until a tender is entered. */
+    draftChange() {
+      if (this.draftTendered === null) return null;
+      return Math.round((this.draftTendered - this.draftGrandTotal) * 100) / 100;
+    },
+
+    /** Non-empty when the entered payments cannot be accepted (only cash can give change). */
+    draftPayError() {
+      const cash = this.draftPayments.find((p) => p.method === 'cash')?.amount || 0;
+      const nonCash = (this.draftTendered || 0) - cash;
+      if (nonCash > this.draftGrandTotal + 0.005) return 'Card, EFT, mobile money and cheque amounts cannot be more than the total';
+      return '';
     },
 
     /** What the customer actually pays: tax-inclusive gross total minus any header-level discount. */
@@ -119,6 +190,8 @@ export const useTransactionsStore = defineStore('transactions', {
         issuedAt: String(tx.issued_at || tx.created_at).slice(0, 10),
         notes: tx.notes || '',
         discountTotal: tx.discount_total || 0,
+        posMode: tx.type === 'invoice' && tx.amount_tendered !== null && tx.amount_tendered !== undefined,
+        ...paymentsToDraft(tx),
         lineItems: (tx.items || []).map((i) => ({
           product_id: i.product_id,
           name: i.name,
@@ -214,6 +287,14 @@ export const useTransactionsStore = defineStore('transactions', {
         }
       });
 
+      // POS cash sale: the customer must hand over at least the total (no part payments).
+      const isPosSale = Boolean(this.draft.posMode) && type === 'invoice' && saveAs === 'invoice';
+      if (isPosSale) {
+        if (this.draftTendered === null) throw new Error('Enter the tendered amount first');
+        if (this.draftChange < 0) throw new Error('The amount paid is less than the total');
+        if (this.draftPayError) throw new Error(this.draftPayError);
+      }
+
       const payload = {
         type,
         status,
@@ -224,6 +305,8 @@ export const useTransactionsStore = defineStore('transactions', {
         items: this.draft.lineItems,
         issuedAt: this.draft.issuedAt || todayISODate(),
         manualReference: this.draft.manualReference || null,
+        amountTendered: isPosSale ? this.draftTendered : null,
+        payments: isPosSale ? this.draftPayments : [],
       };
 
       let saved;
@@ -239,7 +322,13 @@ export const useTransactionsStore = defineStore('transactions', {
         const productsStore = useProductsStore();
         await productsStore.fetchAll();
       }
+      // A finished POS sale leaves the screen ready for the next customer, still in POS mode.
+      const keepPos = isPosSale && !this.draft.id;
       this.draft = emptyDraft();
+      if (keepPos) {
+        this.draft.type = 'invoice';
+        this.draft.posMode = true;
+      }
       return saved;
     },
 

@@ -82,11 +82,24 @@
             </div>
           </header>
 
-          <div class="desktop-window__content" :class="{ 'desktop-window__content--with-pos': isTransactionsRoute }">
+          <div class="desktop-window__content"
+            :class="{ 'desktop-window__content--with-pos': isTransactionsRoute, 'desktop-window__content--with-payment': isTransactionsRoute && isPosMode }">
             <router-view />
           </div>
 
-          <footer v-if="isTransactionsRoute" class="pos-totals-bar">
+          <div v-if="isTransactionsRoute && isPosMode" class="pos-payment-bar">
+            <span class="pos-payment-bar__label">Payment</span>
+            <q-checkbox v-for="m in PAYMENT_METHODS" :key="m.value" v-model="payModel" :val="m.value" :label="m.label"
+              dense class="pos-payment-bar__check" />
+            <template v-if="posSplit">
+              <q-input v-for="m in posMethods" :key="`amt-${m}`" v-model.number="transactionsStore.draft.payAmounts[m]"
+                type="number" min="0" step="0.01" dense outlined :label="`${paymentLabel(m)} amount`"
+                class="pos-pay-amount" />
+            </template>
+            <span v-if="posPayError" class="text-negative text-caption">{{ posPayError }}</span>
+          </div>
+
+          <footer v-if="isTransactionsRoute" class="pos-totals-bar" :class="{ 'pos-totals-bar--pos': isPosMode }">
             <div class="pos-totals-bar__group">
               <div class="pos-totals-bar__line">
                 <span>Subtotal</span>
@@ -109,11 +122,30 @@
               <div class="text-h5">{{ summaryAmount(transactionsStore.draftGrandTotal) }}</div>
             </div>
 
+            <div v-if="isPosMode" class="pos-totals-bar__tender">
+              <template v-if="posSingleCash">
+                <q-input v-model.number="transactionsStore.draft.amountTendered" type="number" min="0" step="0.01" dense
+                  outlined label="Tendered" class="pos-tender-input" input-class="text-h6 text-right"
+                  @keyup.enter="posCanComplete && saveTransaction('invoice')" />
+                <q-btn flat dense no-caps size="sm" label="Exact" :disable="!transactionsStore.draftGrandTotal"
+                  @click="setExactTender" />
+              </template>
+              <div v-else class="pos-totals-bar__paid">
+                <div class="text-caption">{{ posSplit ? 'Paid' : `Paid by ${paymentLabel(posMethods[0])}` }}</div>
+                <div class="text-h6">{{ transactionsStore.draftTendered === null ? '-' : format(transactionsStore.draftTendered) }}</div>
+              </div>
+              <div class="pos-totals-bar__change" :class="posChangeClass">
+                <div class="text-caption">{{ posChangeLabel }}</div>
+                <div class="text-h5">{{ posChangeText }}</div>
+              </div>
+            </div>
+
             <div class="pos-totals-bar__actions">
-              <q-btn outline no-caps label="Save Draft" :loading="savingTransaction"
+              <q-btn v-if="!isPosMode" outline no-caps label="Save Draft" :loading="savingTransaction"
                 @click="saveTransaction('draft')" />
               <q-btn color="primary" no-caps :label="primaryActionLabel" :loading="savingTransaction"
-                :disable="!transactionsStore.draft.lineItems.length" @click="saveTransaction(primaryActionType)" />
+                :disable="!transactionsStore.draft.lineItems.length || (isPosMode && !posCanComplete)"
+                @click="saveTransaction(primaryActionType)" />
             </div>
           </footer>
         </section>
@@ -141,6 +173,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat no-caps label="Print Document" :disable="!lastSavedTransaction" @click="printLastSaved" />
+          <q-btn flat no-caps icon="receipt_long" label="Print Receipt" :disable="!lastSavedTransaction" @click="printReceiptShortcut" />
           <q-btn flat no-caps label="Save as PDF" :disable="!lastSavedTransaction" @click="exportLastSavedPdf" />
           <q-btn color="primary" no-caps label="Close" @click="showPostSaveDialog = false" />
         </q-card-actions>
@@ -186,6 +219,8 @@ import { useSettingsStore } from 'src/stores/settings';
 import { useDesktopStore } from 'src/stores/desktop';
 import { useCurrency } from 'src/composables/useCurrency';
 import { usePrintDocument } from 'src/composables/usePrintDocument';
+import { useThermalReceipt } from 'src/composables/useThermalReceipt';
+import { PAYMENT_METHODS, paymentLabel } from 'src/constants/payments';
 import { emitUiEvent } from 'src/composables/useUiEvents';
 import TemplateSwitcher from 'src/components/print-templates/TemplateSwitcher.vue';
 import TransactionList from 'src/components/transactions/TransactionList.vue';
@@ -198,6 +233,7 @@ const settingsStore = useSettingsStore();
 const desktopStore = useDesktopStore();
 const { format } = useCurrency();
 const { print, exportPdf } = usePrintDocument();
+const { printReceipt } = useThermalReceipt();
 const syncing = ref(false);
 
 const workspaceRef = ref(null);
@@ -243,6 +279,8 @@ const transactionTypeOptions = [
   { label: 'Quotation', value: 'quote' },
   { label: 'Invoice', value: 'invoice' },
   { label: 'Purchase Order', value: 'purchase_order' },
+  // POS = a cash sale: saved as an invoice, with a Tendered amount and automatic Change on the receipt
+  { label: 'POS', value: 'pos' },
 ];
 
 const currentPath = computed(() => route.path);
@@ -251,16 +289,57 @@ const activeNavItem = computed(() => navItems.find((item) => isActive(item.route
 const activeWindowTitle = computed(() => activeNavItem.value?.label || String(route.name || 'Workspace'));
 const isTransactionsRoute = computed(() => currentPath.value === '/transactions');
 const posDraftType = computed({
-  get: () => transactionsStore.draft.type,
-  set: (type) => {
-    if (!transactionsStore.draft.id) {
-      transactionsStore.draft.type = type;
+  get: () => (transactionsStore.draft.posMode && transactionsStore.draft.type === 'invoice' ? 'pos' : transactionsStore.draft.type),
+  set: (value) => {
+    const draft = transactionsStore.draft;
+    if (draft.id) return;
+    if (value === 'pos') {
+      draft.type = 'invoice';
+      draft.posMode = true;
+    } else {
+      draft.type = value;
+      draft.posMode = false;
+      draft.amountTendered = '';
+      draft.payMethods = [];
+      draft.payAmounts = {};
     }
   },
 });
+const isPosMode = computed(() => Boolean(transactionsStore.draft.posMode) && transactionsStore.draft.type === 'invoice');
+const posChange = computed(() => transactionsStore.draftChange);
+const posMethods = computed(() => transactionsStore.draftPayMethods);
+const posSplit = computed(() => posMethods.value.length > 1);
+const posSingleCash = computed(() => posMethods.value.length === 1 && posMethods.value[0] === 'cash');
+const posPayError = computed(() => transactionsStore.draftPayError);
+const posCanComplete = computed(() => posChange.value !== null && posChange.value >= 0 && !posPayError.value);
+
+// Checkboxes: nothing ticked means cash (shown ticked). Ticking another method while the
+// default cash is showing replaces it; unticking the last method falls back to cash.
+const payModel = computed({
+  get: () => transactionsStore.draftPayMethods,
+  set: (value) => {
+    const draft = transactionsStore.draft;
+    const previous = draft.payMethods || [];
+    const added = value.filter((m) => !previous.includes(m));
+    draft.payMethods = previous.length === 0 && added.length && added[0] !== 'cash' ? added : value;
+    if (draft.payMethods.length === 1 && draft.payMethods[0] === 'cash') draft.payMethods = [];
+    if (draft.payMethods.length < 2) draft.payAmounts = {};
+  },
+});
+const posChangeLabel = computed(() => (posChange.value !== null && posChange.value < 0 ? 'Short by' : 'Change'));
+const posChangeText = computed(() => (posChange.value === null ? '-' : format(Math.abs(posChange.value))));
+const posChangeClass = computed(() => {
+  if (posChange.value === null) return '';
+  return posChange.value < 0 ? 'pos-change--short' : 'pos-change--ok';
+});
+
+function setExactTender() {
+  transactionsStore.draft.amountTendered = Number(transactionsStore.draftGrandTotal.toFixed(2));
+}
 const showTaxLine = computed(() => Number(transactionsStore.draftTaxTotal || 0) > 0);
 const primaryActionType = computed(() => transactionsStore.draft.type);
 const primaryActionLabel = computed(() => {
+  if (isPosMode.value) return 'Complete Sale';
   return {
     quote: 'Save Quotation',
     invoice: 'Save Invoice',
@@ -344,7 +423,9 @@ async function openReceiptsFolder() {
 }
 
 function startNewFromMode() {
+  const keepPos = isPosMode.value;
   transactionsStore.startNewDraft(transactionsStore.draft.type);
+  if (keepPos) transactionsStore.draft.posMode = true;
 }
 
 async function openRecentTransactions() {
@@ -378,6 +459,23 @@ async function printLastSaved() {
   }
 }
 
+// Prints the POS receipt (template chosen in Settings) for the document being
+// edited, or else for the last document saved in this session.
+async function printReceiptShortcut() {
+  try {
+    const draftId = transactionsStore.draft.id;
+    const tx = draftId ? await transactionsStore.fetchOne(draftId) : lastSavedTransaction.value;
+    if (!tx) {
+      $q.notify({ type: 'warning', message: 'Save the document first (for example as an invoice), then print the receipt.' });
+      return;
+    }
+    await printReceipt(tx);
+    $q.notify({ type: 'positive', message: `Receipt for ${tx.number} sent to the POS printer`, timeout: 1500 });
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message || 'Could not print receipt' });
+  }
+}
+
 async function exportLastSavedPdf() {
   if (!lastSavedTransaction.value) return;
   try {
@@ -392,13 +490,39 @@ async function exportLastSavedPdf() {
   }
 }
 
+// A POS sale skips the post-save dialog: show the change to give back, then print the receipt.
+async function finishPosSale(saved) {
+  const change = Math.max(0, Math.round((Number(saved.amount_tendered) - Number(saved.grand_total)) * 100) / 100);
+  $q.notify({
+    type: 'positive',
+    position: 'top',
+    timeout: 8000,
+    message: `Change: ${format(change)}`,
+    caption: `${saved.number} - total ${format(saved.grand_total)}, tendered ${format(saved.amount_tendered)} (${(saved.payments || []).map((p) => paymentLabel(p.method)).join(' + ') || 'Cash'})`,
+  });
+  try {
+    await printReceipt(saved);
+  } catch (err) {
+    const reason = String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+    $q.notify({
+      type: 'warning',
+      timeout: 8000,
+      message: `Sale saved, but the receipt did not print: ${reason}`,
+      caption: 'Fix the printer, then press the print-receipt shortcut to print it again.',
+    });
+  }
+}
+
 async function saveTransaction(saveAs) {
   savingTransaction.value = true;
   try {
+    const posSale = isPosMode.value && saveAs === 'invoice';
     const saved = await transactionsStore.saveDraft(saveAs);
     lastSavedTransaction.value = saved;
 
-    if (shouldShowPostSaveDialog(saveAs)) {
+    if (posSale) {
+      await finishPosSale(saved);
+    } else if (shouldShowPostSaveDialog(saveAs)) {
       showPostSaveDialog.value = true;
     }
   } catch (err) {
@@ -448,6 +572,9 @@ function handleShortcut(actionId) {
       break;
     case 'remove_active_row':
       emitUiEvent('remove-active-row');
+      break;
+    case 'print_receipt':
+      printReceiptShortcut();
       break;
     default:
       break;
@@ -969,6 +1096,68 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.desktop-window__content--with-payment {
+  height: calc(100% - 42px - 88px - 52px);
+}
+
+.pos-payment-bar {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 14px;
+  overflow-x: auto;
+  padding: 0 12px;
+  border-top: 1px solid var(--border-color);
+  background: var(--surface-2);
+}
+
+.pos-payment-bar__label {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.pos-payment-bar__check {
+  white-space: nowrap;
+}
+
+.pos-pay-amount {
+  width: 140px;
+  flex-shrink: 0;
+}
+
+.pos-totals-bar__paid {
+  min-width: 150px;
+  text-align: right;
+}
+
+.pos-totals-bar--pos {
+  grid-template-columns: minmax(240px, 1fr) auto auto auto;
+}
+
+.pos-totals-bar__tender {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pos-tender-input {
+  width: 150px;
+}
+
+.pos-totals-bar__change {
+  min-width: 130px;
+  text-align: right;
+}
+
+.pos-change--ok {
+  color: var(--q-positive, #21ba45);
+}
+
+.pos-change--short {
+  color: var(--q-negative, #c10015);
+}
+
 @media (max-width: 1024px) {
   .desktop-workspace {
     padding: 10px;
@@ -988,6 +1177,10 @@ onBeforeUnmount(() => {
 
   .desktop-window__content--with-pos {
     height: calc(100% - 42px - 124px);
+  }
+
+  .desktop-window__content--with-payment {
+    height: calc(100% - 42px - 124px - 52px);
   }
 
   .pos-totals-bar {

@@ -428,6 +428,9 @@ export class SettingsRepository {
   }
 }
 
+/** Payment methods a POS sale can be paid with, in the order they print on reports. */
+const PAYMENT_METHODS = ['cash', 'speedpoint', 'eft', 'ecocash', 'mpesa', 'cheque']
+
 export class TransactionRepository {
   constructor(db) {
     this.db = db
@@ -495,7 +498,134 @@ export class TransactionRepository {
       .get(id)
     if (!tx) return null
     tx.items = this.db.prepare(`SELECT * FROM transaction_items WHERE transaction_id = ?`).all(id)
+    tx.payments = this.db
+      .prepare(`SELECT method, amount FROM transaction_payments WHERE transaction_id = ? ORDER BY id`)
+      .all(id)
     return tx
+  }
+
+  /**
+   * End-of-day sheet: POS sales only (invoices that carry a payment), for one
+   * LOCAL calendar day. created_at is stored in UTC, so the day is cut with
+   * 'localtime' - a sale at 00:30 belongs to the day on the till's clock.
+   * Cash is reported net of change so the method totals add up to the sales
+   * total. Voided sales are listed but left out of every total.
+   * @param {{ date?: string|null }} opts date = 'YYYY-MM-DD'; defaults to today.
+   */
+  endOfDay({ date = null } = {}) {
+    const day = date && /^\d{4}-\d{2}-\d{2}$/.test(String(date))
+      ? String(date)
+      : this.db.prepare(`SELECT date('now','localtime') AS d`).get().d
+
+    const rows = this.db
+      .prepare(
+        `
+      SELECT tx.id, tx.number, tx.status, tx.grand_total, tx.amount_tendered, tx.created_at, c.name AS customer_name
+      FROM transactions tx
+      LEFT JOIN customers c ON c.id = tx.customer_id
+      WHERE tx.type = 'invoice' AND tx.amount_tendered IS NOT NULL
+        AND date(tx.created_at, 'localtime') = ?
+      ORDER BY tx.created_at ASC, tx.id ASC
+    `,
+      )
+      .all(day)
+
+    const paymentsByTx = new Map()
+    if (rows.length) {
+      const marks = rows.map(() => '?').join(',')
+      const payRows = this.db
+        .prepare(`SELECT transaction_id, method, amount FROM transaction_payments WHERE transaction_id IN (${marks}) ORDER BY id`)
+        .all(...rows.map((r) => r.id))
+      for (const p of payRows) {
+        if (!paymentsByTx.has(p.transaction_id)) paymentsByTx.set(p.transaction_id, [])
+        paymentsByTx.get(p.transaction_id).push({ method: p.method, amount: p.amount })
+      }
+    }
+
+    const byMethod = Object.fromEntries(PAYMENT_METHODS.map((m) => [m, 0]))
+    let grandTotal = 0
+    let count = 0
+    const sales = rows.map((row) => {
+      const total = Number(row.grand_total || 0)
+      const change = Math.max(0, Number((Number(row.amount_tendered) - total).toFixed(2)))
+      // a sale with no payment rows (should not happen after migration 16) counts as cash
+      const raw = paymentsByTx.get(row.id) || [{ method: 'cash', amount: Number(row.amount_tendered) }]
+      const payments = raw.map((p) => ({
+        method: p.method,
+        amount: Number((p.method === 'cash' ? p.amount - change : p.amount).toFixed(2)),
+      }))
+      const isVoid = row.status === 'void'
+      if (!isVoid) {
+        grandTotal += total
+        count += 1
+        for (const p of payments) byMethod[p.method] += p.amount
+      }
+      return {
+        id: row.id,
+        number: row.number,
+        customer_name: row.customer_name || null,
+        grand_total: total,
+        status: isVoid ? 'void' : 'paid',
+        created_at: row.created_at,
+        payments,
+      }
+    })
+
+    return {
+      date: day,
+      sales,
+      totals: {
+        count,
+        grandTotal: Number(grandTotal.toFixed(2)),
+        byMethod: Object.fromEntries(Object.entries(byMethod).map(([m, v]) => [m, Number(v.toFixed(2))])),
+      },
+    }
+  }
+
+  /**
+   * POS sales only. An invoice may carry how it was paid: `payments` is
+   * [{ method, amount }] (amount = what the customer handed over by that method).
+   * With only `amountTendered` (or nothing ticked) the sale is cash.
+   * Rules: no part payments (the sum can never be below the total) and non-cash
+   * methods can never exceed the total, because only cash can give change.
+   * Returns { tendered, payments } - both empty for every other document.
+   */
+  _resolvePayments(type, payments, amountTendered, grandTotal) {
+    const none = { tendered: null, payments: [] }
+    if (type !== 'invoice') return none
+
+    let list = Array.isArray(payments) ? payments : []
+    if (!list.length) {
+      if (amountTendered === null || amountTendered === undefined || amountTendered === '') return none
+      list = [{ method: 'cash', amount: amountTendered }]
+    }
+
+    const byMethod = new Map()
+    for (const p of list) {
+      const method = String(p?.method || 'cash')
+      if (!PAYMENT_METHODS.includes(method)) throw new Error(`Unknown payment method: ${method}`)
+      const amount = Number(p?.amount)
+      if (!Number.isFinite(amount) || amount < 0) throw new Error('A payment amount is not valid')
+      if (amount > 0) byMethod.set(method, (byMethod.get(method) || 0) + amount)
+    }
+    const resolved = PAYMENT_METHODS.filter((m) => byMethod.has(m)).map((m) => ({
+      method: m,
+      amount: Number(byMethod.get(m).toFixed(2)),
+    }))
+    if (!resolved.length) return none
+
+    const total = Number(grandTotal || 0)
+    const tendered = Number(resolved.reduce((sum, p) => sum + p.amount, 0).toFixed(2))
+    if (tendered + 0.005 < total) throw new Error('The amount paid is less than the total')
+    const nonCash = tendered - (resolved.find((p) => p.method === 'cash')?.amount || 0)
+    if (nonCash > total + 0.005) throw new Error('Card, EFT, mobile money and cheque payments cannot be more than the total')
+    return { tendered, payments: resolved }
+  }
+
+  _savePayments(txId, payments) {
+    this.db.prepare(`DELETE FROM transaction_payments WHERE transaction_id = ?`).run(txId)
+    const stmt = this.db.prepare(`INSERT INTO transaction_payments (transaction_id, method, amount) VALUES (?, ?, ?)`)
+    for (const p of payments) stmt.run(txId, p.method, p.amount)
   }
 
   /**
@@ -561,6 +691,8 @@ export class TransactionRepository {
     notes = '',
     issuedAt = null,
     manualReference = null,
+    amountTendered = null,
+    payments = [],
   }) {
     const run = this.db.transaction(() => {
       const number = this._nextNumber(type)
@@ -568,15 +700,16 @@ export class TransactionRepository {
       const { subtotal, taxTotal, grandTotal } = this._computeTotals(items, discountTotal, {
         nullableTotals: type === 'purchase_order',
       })
+      const paid = this._resolvePayments(type, payments, amountTendered, grandTotal)
 
       const info = this.db
         .prepare(
           `
         INSERT INTO transactions (
-          number, type, status, customer_id, supplier_id, subtotal, discount_total, tax_total, grand_total, notes, issued_at, manual_reference
+          number, type, status, customer_id, supplier_id, subtotal, discount_total, tax_total, grand_total, notes, issued_at, manual_reference, amount_tendered
         )
         VALUES (
-          @number, @type, @status, @customerId, @supplierId, @subtotal, @discountTotal, @taxTotal, @grandTotal, @notes, @issuedAt, @manualReference
+          @number, @type, @status, @customerId, @supplierId, @subtotal, @discountTotal, @taxTotal, @grandTotal, @notes, @issuedAt, @manualReference, @amountTendered
         )
       `,
         )
@@ -593,9 +726,11 @@ export class TransactionRepository {
           notes,
           issuedAt: issuedAt || null,
           manualReference: manualReference || null,
+          amountTendered: paid.tendered,
         })
 
       const txId = info.lastInsertRowid
+      this._savePayments(txId, paid.payments)
       const itemStmt = this.db.prepare(`
         INSERT INTO transaction_items (transaction_id, product_id, name, quantity, box_size, box_count, unit_price, discount_pct, tax_rate, line_total)
         VALUES (@transaction_id, @product_id, @name, @quantity, @box_size, @box_count, @unit_price, @discount_pct, @tax_rate, @line_total)
@@ -656,6 +791,8 @@ export class TransactionRepository {
       status,
       issuedAt = null,
       manualReference = null,
+      amountTendered = null,
+      payments = [],
     },
   ) {
     const run = this.db.transaction(() => {
@@ -666,6 +803,7 @@ export class TransactionRepository {
       const { subtotal, taxTotal, grandTotal } = this._computeTotals(items, discountTotal, {
         nullableTotals: resolvedType === 'purchase_order',
       })
+      const paid = this._resolvePayments(resolvedType, payments, amountTendered, grandTotal)
 
       this.db
         .prepare(
@@ -674,6 +812,7 @@ export class TransactionRepository {
         type=@type, customer_id=@customerId, supplier_id=@supplierId, subtotal=@subtotal, discount_total=@discountTotal,
         tax_total=@taxTotal, grand_total=@grandTotal, notes=@notes, status=COALESCE(@status, status),
         issued_at=COALESCE(@issuedAt, issued_at), manual_reference=@manualReference,
+        amount_tendered=@amountTendered,
         updated_at = CURRENT_TIMESTAMP WHERE id=@id
       `,
         )
@@ -690,7 +829,9 @@ export class TransactionRepository {
           status: status || null,
           issuedAt: issuedAt || null,
           manualReference: manualReference || null,
+          amountTendered: paid.tendered,
         })
+      this._savePayments(id, paid.payments)
 
       this.db.prepare(`DELETE FROM transaction_items WHERE transaction_id = ?`).run(id)
       const itemStmt = this.db.prepare(`

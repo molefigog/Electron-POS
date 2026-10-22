@@ -17,10 +17,9 @@
           The network server is not running. {{ cfg.serverError }}
         </q-banner>
 
-        <q-select
-          v-model="receiptPrinter" :options="printerOptions" emit-value map-options clearable dense outlined
-          label="Receipt printer (80 mm thermal, connected to this PC)" :loading="loadingPrinters"
-        />
+        <div class="text-caption text-grey-8">
+          The receipt printer for this PC is chosen in Settings &rarr; Receipt (POS) printer.
+        </div>
 
         <div v-if="cfg.connectionCodes.length && cfg.activeMode === 'host'" class="q-gutter-y-sm">
           <div class="text-weight-medium">Connection code for the other PCs</div>
@@ -82,11 +81,8 @@ const available = Boolean(bridge);
 
 const cfg = ref({ mode: 'single', activeMode: 'single', connectionCodes: [], addresses: [] });
 const mode = ref('single');
-const receiptPrinter = ref('');
 const code = ref('');
 const selectedAddress = ref('');
-const printers = ref([]);
-const loadingPrinters = ref(false);
 const busy = ref(false);
 const testing = ref(false);
 const printing = ref(false);
@@ -98,12 +94,11 @@ const modeOptions = [
   { label: 'Connect to the main PC', value: 'client' },
 ];
 
-const printerOptions = computed(() => printers.value.map((p) => ({ label: p.displayName || p.name, value: p.name })));
 const currentCode = computed(() => {
   const list = cfg.value.connectionCodes || [];
   return (list.find((c) => c.address === selectedAddress.value) || list[0])?.code || '';
 });
-const dirty = computed(() => mode.value !== cfg.value.mode || (receiptPrinter.value || '') !== (cfg.value.receiptPrinter || ''));
+const dirty = computed(() => mode.value !== cfg.value.mode);
 
 function cleanError(err) {
   return String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
@@ -119,26 +114,13 @@ function askRestart(message) {
 async function load() {
   cfg.value = await bridge.getConfig();
   mode.value = cfg.value.mode;
-  receiptPrinter.value = cfg.value.receiptPrinter || '';
   selectedAddress.value = cfg.value.connectionCodes?.[0]?.address || '';
-}
-
-async function loadPrinters() {
-  if (!window.appBridge?.getPrinters) return;
-  loadingPrinters.value = true;
-  try {
-    printers.value = await window.appBridge.getPrinters();
-  } catch {
-    printers.value = [];
-  } finally {
-    loadingPrinters.value = false;
-  }
 }
 
 async function save() {
   busy.value = true;
   try {
-    const res = await bridge.save({ mode: mode.value, receiptPrinter: receiptPrinter.value || '' });
+    const res = await bridge.save({ mode: mode.value });
     cfg.value = res.config;
     $q.notify({ type: 'positive', message: 'Network settings saved' });
     if (res.restartRequired) askRestart('The POS must restart to apply the new network role.');
@@ -215,7 +197,6 @@ function receiptTestHtml() {
 async function printTest() {
   printing.value = true;
   try {
-    if (dirty.value) await bridge.save({ receiptPrinter: receiptPrinter.value || '' });
     await window.appBridge.printReceipt({ html: receiptTestHtml() });
     $q.notify({ type: 'positive', message: 'Test receipt sent to the printer' });
   } catch (err) {
@@ -227,7 +208,7 @@ async function printTest() {
 
 onMounted(async () => {
   if (!available) return;
-  await Promise.all([load(), loadPrinters()]);
+  await load();
   offStatus = bridge.onStatus?.((connected) => { cfg.value = { ...cfg.value, clientConnected: connected }; });
 });
 onBeforeUnmount(() => offStatus?.());

@@ -14,6 +14,7 @@ const DEFAULT_SETTINGS = {
   company_stamp: '',
   currency_symbol: 'M',
   print_template: 'classic',
+  thermal_template: 'compact',
   quote_prefix: 'QUO-',
   invoice_prefix: 'INV-',
   purchase_order_prefix: 'PO-',

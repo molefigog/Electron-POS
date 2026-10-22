@@ -8,6 +8,8 @@ class TransactionRepository extends BaseRepository {
   create(data) { return this.call('create', data); }
   update(id, data) { return this.call('update', id, data); }
   delete(id) { return this.call('delete', id); }
+  /** POS sales of one local day with payment totals. opts: { date?: 'YYYY-MM-DD' } (default today). */
+  endOfDay(opts = {}) { return this.call('endOfDay', opts); }
   /** The one that matters: quote -> invoice, no re-entry of data. overrides: { issuedAt? } */
   convertToInvoice(quoteId, overrides = {}) { return this.call('convertQuoteToInvoice', quoteId, overrides); }
 }

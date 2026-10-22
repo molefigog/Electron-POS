@@ -1,0 +1,246 @@
+diff --git a/src/components/transactions/TransactionList.vue b/src/components/transactions/TransactionList.vue
+index 62ae995..877eb4e 100644
+--- a/src/components/transactions/TransactionList.vue
++++ b/src/components/transactions/TransactionList.vue
+@@ -30,6 +30,19 @@
+         <q-td :props="props" class="q-gutter-x-xs">
+           <q-btn dense flat round icon="edit" @click="edit(props.row)" />
+           <q-btn dense flat round icon="print" @click="printRow(props.row)" />
++          <q-btn dense flat round icon="receipt_long">
++            <q-tooltip>Print thermal receipt</q-tooltip>
++            <q-menu auto-close>
++              <q-list dense style="min-width: 190px">
++                <q-item v-for="(t, key) in THERMAL_TEMPLATES" :key="key" clickable @click="printReceiptRow(props.row, key)">
++                  <q-item-section>
++                    <q-item-label>{{ t.label }} receipt</q-item-label>
++                    <q-item-label caption>{{ t.hint }}</q-item-label>
++                  </q-item-section>
++                </q-item>
++              </q-list>
++            </q-menu>
++          </q-btn>
+           <q-btn dense flat round icon="picture_as_pdf" @click="exportRow(props.row)" />
+           <q-btn dense flat round icon="email" @click="emailRow(props.row)">
+             <q-tooltip>Email document</q-tooltip>
+@@ -70,12 +83,15 @@ import { ref, onMounted } from 'vue';
+ import { useQuasar } from 'quasar';
+ import { useTransactionsStore } from 'src/stores/transactions';
+ import { usePrintDocument } from 'src/composables/usePrintDocument';
++import { useThermalReceipt } from 'src/composables/useThermalReceipt';
++import { THERMAL_TEMPLATES } from 'src/services/print-templates/thermal';
+ import { useCurrency } from 'src/composables/useCurrency';
+ 
+ const emit = defineEmits(['edit']);
+ const $q = useQuasar();
+ const transactionsStore = useTransactionsStore();
+ const { print, exportPdf, emailPdf } = usePrintDocument();
++const { printReceipt } = useThermalReceipt();
+ const { format } = useCurrency();
+ 
+ const search = ref('');
+@@ -149,6 +165,16 @@ async function printRow(row) {
+   }
+ }
+ 
++async function printReceiptRow(row, templateKey) {
++  try {
++    const full = await transactionsStore.fetchOne(row.id);
++    await printReceipt(full, templateKey);
++    $q.notify({ type: 'positive', message: 'Receipt sent to the printer', timeout: 1200 });
++  } catch (err) {
++    $q.notify({ type: 'negative', message: err.message || 'Could not print receipt' });
++  }
++}
++
+ async function exportRow(row) {
+   const full = await transactionsStore.fetchOne(row.id);
+   try {
+diff --git a/src/composables/useThermalReceipt.js b/src/composables/useThermalReceipt.js
+new file mode 100644
+index 0000000..fa0fbcb
+--- /dev/null
++++ b/src/composables/useThermalReceipt.js
+@@ -0,0 +1,24 @@
++import { useSettingsStore } from 'src/stores/settings'
++import { renderThermalReceipt } from 'src/services/print-templates/thermal'
++
++/**
++ * Prints a saved transaction (as returned by transactionsStore.fetchOne) on the
++ * 80 mm receipt printer chosen in Settings > Network. On a client PC the job is
++ * forwarded to the main PC automatically by app:printReceipt.
++ */
++export function useThermalReceipt() {
++  const settingsStore = useSettingsStore()
++
++  function buildHtml(tx, templateKey) {
++    return renderThermalReceipt(templateKey, tx, settingsStore.values)
++  }
++
++  async function printReceipt(tx, templateKey = 'compact') {
++    if (!window.appBridge?.printReceipt) {
++      throw new Error('Receipt printing is only available inside the desktop app.')
++    }
++    return window.appBridge.printReceipt({ html: buildHtml(tx, templateKey) })
++  }
++
++  return { buildHtml, printReceipt }
++}
+diff --git a/src/services/print-templates/thermal.js b/src/services/print-templates/thermal.js
+new file mode 100644
+index 0000000..c7e1d55
+--- /dev/null
++++ b/src/services/print-templates/thermal.js
+@@ -0,0 +1,153 @@
++import { docDate, money } from './shared'
++
++/**
++ * 80 mm thermal receipt layouts. They produce plain HTML that is sent through
++ * window.appBridge.printReceipt({ html }) - the same path as the test receipt
++ * in Settings > Network - so they print on the receipt printer of the main PC,
++ * from any PC on the network. No extra npm package is needed.
++ *
++ * Prices are tax-inclusive (see TransactionRepository._computeTotals):
++ * line_total is what the customer pays, VAT is shown as "included".
++ */
++export const THERMAL_TEMPLATES = {
++  compact: { label: 'Compact', hint: 'Company, items and total. Saves paper.' },
++  detailed: { label: 'Detailed', hint: 'Logo, company details, customer, item columns, discount and VAT.' },
++}
++
++const DOC_LABELS = { quote: 'QUOTATION', invoice: 'INVOICE', purchase_order: 'PURCHASE ORDER' }
++
++function esc(value) {
++  return String(value ?? '')
++    .replace(/&/g, '&amp;')
++    .replace(/</g, '&lt;')
++    .replace(/>/g, '&gt;')
++    .replace(/"/g, '&quot;')
++}
++
++function qty(value) {
++  const n = Number(value)
++  return Number.isFinite(n) ? String(Number(n.toFixed(4))) : esc(value)
++}
++
++const BASE_CSS = `
++  @page { margin: 0 }
++  * { box-sizing: border-box }
++  html, body { margin: 0; background: #fff }
++  body { width: 80mm; padding: 3mm 4mm 5mm; font: 12px/1.35 "Segoe UI", Arial, sans-serif; color: #000 }
++  .c { text-align: center }
++  .r { text-align: right }
++  .b { font-weight: 700 }
++  .small { font-size: 10.5px }
++  .name { font-size: 16px; font-weight: 700; text-align: center; margin-bottom: 2px }
++  hr { border: 0; border-top: 1px dashed #000; margin: 5px 0 }
++  hr.solid { border-top-style: solid }
++  .row { display: flex; justify-content: space-between; gap: 6px }
++  .row .grow { flex: 1; min-width: 0; word-break: break-word }
++  .row .amt { white-space: nowrap }
++  .total { font-size: 15px; font-weight: 700 }
++  table { width: 100%; border-collapse: collapse; table-layout: fixed }
++  th { text-align: left; font-size: 10.5px; border-bottom: 1px solid #000; padding: 2px 0 }
++  td { padding: 2px 0; vertical-align: top; word-break: break-word }
++  .logo { display: block; margin: 0 auto 3px; max-width: 40mm; max-height: 16mm; filter: grayscale(1) contrast(1.4) }
++`
++
++function shell(body) {
++  return `<!doctype html><html><head><meta charset="utf-8"><style>${BASE_CSS}</style></head><body>${body}</body></html>`
++}
++
++function party(tx) {
++  if (tx.type === 'purchase_order') return tx.supplier_name || 'Supplier not selected'
++  return tx.customer_name || 'Walk-in Customer'
++}
++
++function companyHeader(company, { full }) {
++  const lines = []
++  if (full && company.company_logo && String(company.company_logo).startsWith('data:image')) {
++    lines.push(`<img class="logo" src="${esc(company.company_logo)}" alt="">`)
++  }
++  lines.push(`<div class="name">${esc(company.company_name || 'My Company')}</div>`)
++  if (company.company_address) lines.push(`<div class="c small">${esc(company.company_address)}</div>`)
++  if (company.company_phone) lines.push(`<div class="c small">Tel: ${esc(company.company_phone)}</div>`)
++  if (full && company.company_email) lines.push(`<div class="c small">${esc(company.company_email)}</div>`)
++  if (full && company.company_vat) lines.push(`<div class="c small">VAT No: ${esc(company.company_vat)}</div>`)
++  return lines.join('')
++}
++
++function renderCompact(tx, company) {
++  const symbol = company.currency_symbol || 'M'
++  const rows = (tx.items || [])
++    .map(
++      (item) => `<div class="row"><div class="grow">${qty(item.quantity)} x ${esc(item.name)}${
++        item.discount_pct ? ` (-${esc(item.discount_pct)}%)` : ''
++      }</div><div class="amt">${money(item.line_total, symbol)}</div></div>`,
++    )
++    .join('')
++
++  return shell(`
++    ${companyHeader(company, { full: false })}
++    <hr>
++    <div class="c b">${DOC_LABELS[tx.type] || 'RECEIPT'} ${esc(tx.number)}</div>
++    <div class="c small">${esc(docDate(tx, company))}</div>
++    <hr>
++    ${rows || '<div class="c">No items</div>'}
++    <hr>
++    <div class="row total"><div>TOTAL</div><div class="amt">${money(tx.grand_total, symbol)}</div></div>
++    <hr>
++    <div class="c small">${esc(company.footer_note || 'Thank you for your business!')}</div>
++  `)
++}
++
++function renderDetailed(tx, company) {
++  const symbol = company.currency_symbol || 'M'
++  const items = tx.items || []
++  const itemsTotal = items.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0)
++  const discount = Number(tx.discount_total) || 0
++  const vat = Number(tx.tax_total) || 0
++
++  const rows = items
++    .map(
++      (item) => `<tr>
++        <td>${esc(item.name)}${item.discount_pct ? `<div class="small">discount ${esc(item.discount_pct)}%</div>` : ''}</td>
++        <td>${qty(item.quantity)}</td>
++        <td class="r">${money(item.unit_price, symbol)}</td>
++        <td class="r b">${money(item.line_total, symbol)}</td>
++      </tr>`,
++    )
++    .join('')
++
++  const totals = []
++  if (discount > 0) {
++    totals.push(`<div class="row"><div>Subtotal</div><div class="amt">${money(itemsTotal, symbol)}</div></div>`)
++    totals.push(`<div class="row"><div>Discount</div><div class="amt">-${money(discount, symbol)}</div></div>`)
++  }
++  totals.push(`<div class="row total"><div>TOTAL</div><div class="amt">${money(tx.grand_total, symbol)}</div></div>`)
++  if (vat > 0) {
++    totals.push(`<div class="row small"><div>VAT included</div><div class="amt">${money(vat, symbol)}</div></div>`)
++  }
++
++  return shell(`
++    ${companyHeader(company, { full: true })}
++    <hr class="solid">
++    <div class="c b" style="font-size:14px">${DOC_LABELS[tx.type] || 'RECEIPT'}</div>
++    <div class="row small"><div>No:</div><div class="b">${esc(tx.number)}</div></div>
++    <div class="row small"><div>Date:</div><div>${esc(docDate(tx, company))}</div></div>
++    <div class="row small"><div>${tx.type === 'purchase_order' ? 'Supplier' : 'Customer'}:</div><div class="r">${esc(party(tx))}</div></div>
++    ${tx.manual_reference ? `<div class="row small"><div>Ref:</div><div class="r">${esc(tx.manual_reference)}</div></div>` : ''}
++    <hr>
++    <table>
++      <colgroup><col style="width:42%"><col style="width:12%"><col style="width:22%"><col style="width:24%"></colgroup>
++      <thead><tr><th>Item</th><th>Qty</th><th class="r">Price</th><th class="r">Total</th></tr></thead>
++      <tbody>${rows || '<tr><td colspan="4" class="c">No items</td></tr>'}</tbody>
++    </table>
++    <hr>
++    ${totals.join('')}
++    ${tx.notes ? `<hr><div class="small">${esc(tx.notes)}</div>` : ''}
++    <hr class="solid">
++    <div class="c small"><i>${esc(company.footer_note || 'Thank you for your business!')}</i></div>
++  `)
++}
++
++/** @param {string} key 'compact' | 'detailed' */
++export function renderThermalReceipt(key, tx, company = {}) {
++  return key === 'detailed' ? renderDetailed(tx, company) : renderCompact(tx, company)
++}
