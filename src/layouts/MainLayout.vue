@@ -132,7 +132,9 @@
               </template>
               <div v-else class="pos-totals-bar__paid">
                 <div class="text-caption">{{ posSplit ? 'Paid' : `Paid by ${paymentLabel(posMethods[0])}` }}</div>
-                <div class="text-h6">{{ transactionsStore.draftTendered === null ? '-' : format(transactionsStore.draftTendered) }}</div>
+                <div class="text-h6">{{ transactionsStore.draftTendered === null ? '-' :
+                  format(transactionsStore.draftTendered)
+                  }}</div>
               </div>
               <div class="pos-totals-bar__change" :class="posChangeClass">
                 <div class="text-caption">{{ posChangeLabel }}</div>
@@ -173,7 +175,8 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat no-caps label="Print Document" :disable="!lastSavedTransaction" @click="printLastSaved" />
-          <q-btn flat no-caps icon="receipt_long" label="Print Receipt" :disable="!lastSavedTransaction" @click="printReceiptShortcut" />
+          <q-btn flat no-caps icon="receipt_long" label="Print Receipt" :disable="!lastSavedTransaction"
+            @click="printReceiptShortcut" />
           <q-btn flat no-caps label="Save as PDF" :disable="!lastSavedTransaction" @click="exportLastSavedPdf" />
           <q-btn color="primary" no-caps label="Close" @click="showPostSaveDialog = false" />
         </q-card-actions>
