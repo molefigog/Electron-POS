@@ -433,6 +433,168 @@ const migrations = [
       `)
     },
   },
+  {
+    version: 17,
+    name: 'add_accounting',
+    up: (db) => {
+      // Double-entry books. Everything here is ADDITIVE: no existing sales,
+      // payment or stock row is rewritten. Journal entries for sales are
+      // derived from `transactions` by AccountingRepository.postTransaction().
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS accounts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          code TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          type TEXT NOT NULL CHECK (type IN ('asset','liability','equity','income','expense')),
+          system_key TEXT UNIQUE, -- lets the posting engine find 'cash', 'ar', 'sales', ... by role, not by code
+          is_system INTEGER NOT NULL DEFAULT 0,
+          is_active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS journal_entries (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          entry_date TEXT NOT NULL, -- YYYY-MM-DD
+          memo TEXT,
+          source_type TEXT NOT NULL CHECK (source_type IN ('invoice','customer_payment','expense','bill','bill_payment','manual','opening_stock')),
+          source_id INTEGER,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_journal_entries_date ON journal_entries(entry_date);
+        CREATE INDEX IF NOT EXISTS idx_journal_entries_source ON journal_entries(source_type, source_id);
+
+        CREATE TABLE IF NOT EXISTS journal_lines (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          entry_id INTEGER NOT NULL REFERENCES journal_entries(id) ON DELETE CASCADE,
+          account_id INTEGER NOT NULL REFERENCES accounts(id),
+          debit REAL NOT NULL DEFAULT 0,
+          credit REAL NOT NULL DEFAULT 0,
+          memo TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_journal_lines_entry ON journal_lines(entry_id);
+        CREATE INDEX IF NOT EXISTS idx_journal_lines_account ON journal_lines(account_id);
+
+        -- Money received against a (non-POS) invoice. POS sales are paid in full
+        -- at the till and keep using transaction_payments.
+        CREATE TABLE IF NOT EXISTS customer_payments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+          customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+          method TEXT NOT NULL CHECK (method IN ('cash','speedpoint','eft','ecocash','mpesa','cheque')),
+          amount REAL NOT NULL CHECK (amount > 0),
+          paid_at TEXT NOT NULL, -- YYYY-MM-DD
+          reference TEXT,
+          notes TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_customer_payments_tx ON customer_payments(transaction_id);
+
+        CREATE TABLE IF NOT EXISTS expenses (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          expense_date TEXT NOT NULL,
+          account_id INTEGER NOT NULL REFERENCES accounts(id),
+          supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
+          payee TEXT,
+          description TEXT,
+          amount REAL NOT NULL CHECK (amount > 0), -- what was paid, VAT included
+          tax_amount REAL NOT NULL DEFAULT 0,      -- recoverable input VAT inside amount
+          method TEXT NOT NULL CHECK (method IN ('cash','speedpoint','eft','ecocash','mpesa','cheque')),
+          reference TEXT,
+          notes TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(expense_date);
+
+        CREATE TABLE IF NOT EXISTS supplier_bills (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          bill_number TEXT,
+          supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
+          purchase_order_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+          bill_date TEXT NOT NULL,
+          due_date TEXT,
+          account_id INTEGER NOT NULL REFERENCES accounts(id), -- what the bill is for (Inventory, an expense, ...)
+          subtotal REAL NOT NULL DEFAULT 0,   -- excluding VAT
+          tax_amount REAL NOT NULL DEFAULT 0,
+          total REAL NOT NULL CHECK (total > 0),
+          status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','paid')),
+          notes TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_supplier_bills_supplier ON supplier_bills(supplier_id);
+
+        CREATE TABLE IF NOT EXISTS bill_payments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          bill_id INTEGER NOT NULL REFERENCES supplier_bills(id) ON DELETE CASCADE,
+          method TEXT NOT NULL CHECK (method IN ('cash','speedpoint','eft','ecocash','mpesa','cheque')),
+          amount REAL NOT NULL CHECK (amount > 0),
+          paid_at TEXT NOT NULL,
+          reference TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_bill_payments_bill ON bill_payments(bill_id);
+      `)
+
+      // Cost snapshot: what the product cost when it was sold, so profit does
+      // not change when cost_price is edited later.
+      const itemColumns = new Set(
+        db.prepare(`PRAGMA table_info(transaction_items)`).all().map((c) => c.name),
+      )
+      if (!itemColumns.has('unit_cost')) {
+        db.exec(`ALTER TABLE transaction_items ADD COLUMN unit_cost REAL`)
+      }
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS trg_transaction_items_unit_cost
+        AFTER INSERT ON transaction_items
+        WHEN NEW.unit_cost IS NULL AND NEW.product_id IS NOT NULL
+        BEGIN
+          UPDATE transaction_items
+          SET unit_cost = (SELECT cost_price FROM products WHERE id = NEW.product_id)
+          WHERE id = NEW.id;
+        END;
+      `)
+      // History: the best available figure is the product's current cost.
+      db.exec(`
+        UPDATE transaction_items
+        SET unit_cost = (SELECT cost_price FROM products p WHERE p.id = transaction_items.product_id)
+        WHERE unit_cost IS NULL AND product_id IS NOT NULL
+      `)
+
+      const seed = db.prepare(
+        `INSERT OR IGNORE INTO accounts (code, name, type, system_key, is_system) VALUES (?, ?, ?, ?, ?)`,
+      )
+      const chart = [
+        ['1000', 'Cash on Hand', 'asset', 'cash'],
+        ['1010', 'Bank Account', 'asset', 'bank'],
+        ['1020', 'Mobile Money', 'asset', 'mobile_money'],
+        ['1100', 'Accounts Receivable', 'asset', 'ar'],
+        ['1200', 'Inventory', 'asset', 'inventory'],
+        ['1300', 'VAT Input (Recoverable)', 'asset', 'vat_input'],
+        ['2000', 'Accounts Payable', 'liability', 'ap'],
+        ['2100', 'VAT Output (Payable)', 'liability', 'vat_output'],
+        ['3000', "Owner's Equity", 'equity', 'equity'],
+        ['3100', 'Opening Balance Equity', 'equity', 'opening_equity'],
+        ['4000', 'Sales Revenue', 'income', 'sales'],
+        ['4100', 'Other Income', 'income', 'other_income'],
+        ['5000', 'Cost of Goods Sold', 'expense', 'cogs'],
+        ['6000', 'Rent', 'expense', null],
+        ['6010', 'Salaries & Wages', 'expense', null],
+        ['6020', 'Utilities (Electricity, Water, Phone)', 'expense', null],
+        ['6030', 'Transport & Fuel', 'expense', null],
+        ['6040', 'Marketing & Advertising', 'expense', null],
+        ['6050', 'Repairs & Maintenance', 'expense', null],
+        ['6060', 'Bank & Card Charges', 'expense', null],
+        ['6070', 'Office & Stationery', 'expense', null],
+        ['6900', 'General Expenses', 'expense', 'expenses_general'],
+      ]
+      for (const [code, name, type, key] of chart) seed.run(code, name, type, key, key ? 1 : 0)
+
+      db.exec(`
+        INSERT OR IGNORE INTO settings (key, value) VALUES
+          ('accounting_lock_date', ''),
+          ('accounting_backfilled', '0');
+      `)
+    },
+  },
 ]
 
 export function runMigrations(db) {

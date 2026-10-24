@@ -12,6 +12,7 @@ const routes = [
       { path: 'suppliers', name: 'suppliers', component: () => import('pages/SuppliersPage.vue') },
       { path: 'stock', name: 'stock', component: () => import('pages/StockPage.vue') },
       { path: 'reports', name: 'reports', component: () => import('pages/ReportsPage.vue') },
+      { path: 'accounting', name: 'accounting', component: () => import('pages/AccountingPage.vue') },
       { path: 'help', name: 'help', component: () => import('pages/HelpPage.vue') },
       { path: 'settings', name: 'settings', component: () => import('pages/SettingsPage.vue') },
     ],

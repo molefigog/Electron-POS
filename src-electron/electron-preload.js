@@ -38,6 +38,8 @@ contextBridge.exposeInMainWorld('appBridge', {
   openReceiptsFolder: () => ipcRenderer.invoke('app:openReceiptsFolder'),
   getPrinters: () => ipcRenderer.invoke('app:getPrinters'),
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  /** Save-as dialog + write. options: { defaultName, filters, content, encoding: 'utf8'|'base64' } -> { saved, path? } */
+  saveFile: (options) => ipcRenderer.invoke('app:saveFile', toPlain(options)),
   updateBranding: (payload) => ipcRenderer.invoke('app:updateBranding', toPlain(payload)),
   updateShortcuts: (map) => ipcRenderer.invoke('app:updateShortcuts', toPlain(map)),
   /**

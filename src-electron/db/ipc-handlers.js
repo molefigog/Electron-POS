@@ -3,6 +3,7 @@ import {
   CustomerRepository, SupplierRepository, StockRepository, TransactionRepository, SettingsRepository,
 } from './repositories.js';
 import { SyncRepository } from './sync-repository.js';
+import { AccountingRepository } from './accounting-repository.js';
 import { app, BrowserWindow, dialog, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -268,7 +269,15 @@ export function registerIpcHandlers(ipcMain, db) {
     transactions: new TransactionRepository(db),
     settings: new SettingsRepository(db),
     sync: new SyncRepository(db),
+    accounting: new AccountingRepository(db),
   };
+
+  // Accounting: post any invoices that pre-date the accounting module (runs once).
+  try {
+    repos?.accounting.ensureBackfilled();
+  } catch (err) {
+    console.error('[accounting] backfill failed:', err.message);
+  }
 
   // Allow-list of which methods may be invoked from the renderer, per repo.
   // This is the whole point of the bridge: the renderer can never run raw SQL.
@@ -282,6 +291,18 @@ export function registerIpcHandlers(ipcMain, db) {
     transactions: ['all', 'find', 'create', 'update', 'delete', 'convertQuoteToInvoice', 'endOfDay'],
     settings: ['all', 'update'],
     sync: ['pending', 'getCursor', 'enqueue', 'acknowledge'],
+    // Accounting: the posting methods (postTransaction / unpostTransaction) are
+    // deliberately NOT listed - only TransactionRepository calls them.
+    accounting: [
+      'overview', 'report', 'rebuild',
+      'openInvoices', 'customerPayments', 'recordCustomerPayment', 'deleteCustomerPayment',
+      'expenses', 'createExpense', 'updateExpense', 'deleteExpense',
+      'bills', 'billPayments', 'purchaseOrdersToBill', 'createBill', 'updateBill', 'deleteBill',
+      'recordBillPayment', 'deleteBillPayment',
+      'accounts', 'createAccount', 'updateAccount', 'deleteAccount',
+      'journalEntries', 'createJournalEntry', 'deleteJournalEntry', 'postOpeningStock',
+      'getLockDate', 'setLockDate',
+    ],
   };
 
   // Runs a whitelisted repository call on THIS PC's database. The main PC's LAN
@@ -319,6 +340,21 @@ export function registerIpcHandlers(ipcMain, db) {
   });
 
   ipcMain.handle('app:getVersion', () => app.getVersion());
+
+  // Save-as dialog for exported files (CSV / XLSX / JSON). Runs on the PC the
+  // user is sitting at, so it also works on LAN client PCs.
+  ipcMain.handle('app:saveFile', async (event, { defaultName = 'export.txt', filters = [], content = '', encoding = 'utf8' } = {}) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const safeName = path.basename(String(defaultName)).replace(/[\\/:*?"<>|]+/g, '-');
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: path.join(os.homedir(), 'Documents', safeName),
+      filters: Array.isArray(filters) ? filters : [],
+    });
+    if (result.canceled || !result.filePath) return { saved: false };
+    const data = encoding === 'base64' ? Buffer.from(String(content), 'base64') : String(content);
+    fs.writeFileSync(result.filePath, data);
+    return { saved: true, path: result.filePath };
+  });
 
   // ---- Database backups (see db/backup.js) ----
   const CLIENT_BACKUP_MSG = 'Backups are made on the main PC.';

@@ -275,6 +275,7 @@ const navItems = [
   { route: '/suppliers', label: 'Suppliers', icon: 'local_shipping' },
   { route: '/stock', label: 'Stock', icon: 'warehouse' },
   { route: '/reports', label: 'Reports', icon: 'bar_chart' },
+  { route: '/accounting', label: 'Accounting', icon: 'account_balance' },
   { route: '/help', label: 'Help', icon: 'help_outline' },
 ];
 

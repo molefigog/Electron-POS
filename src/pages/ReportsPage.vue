@@ -4,6 +4,7 @@
       <div class="text-h5">Reports</div>
       <div class="row q-gutter-sm">
         <q-btn color="secondary" icon="point_of_sale" label="End of Day" @click="showEndOfDay = true" />
+        <ExportMenu :table="exportTable" file-name="transactions-report" :disable="!filteredRows.length" />
         <q-btn outline icon="print" label="Print" @click="printReport" />
         <q-btn color="primary" icon="picture_as_pdf" label="Save PDF" :loading="savingPdf" @click="savePdf" />
       </div>
@@ -60,6 +61,7 @@ import { useCurrency } from 'src/composables/useCurrency';
 import { usePrintDocument } from 'src/composables/usePrintDocument';
 import { renderReportDocument } from 'src/services/print-templates/report';
 import EndOfDayDialog from 'src/components/EndOfDayDialog.vue';
+import ExportMenu from 'src/components/accounting/ExportMenu.vue';
 
 const $q = useQuasar();
 const transactionsStore = useTransactionsStore();
@@ -102,6 +104,30 @@ const conversionRate = computed(() => {
   if (!quotes.length) return 0;
   const converted = quotes.filter((q) => q.status === 'converted').length;
   return Math.round((converted / quotes.length) * 100);
+});
+
+// CSV / Excel / JSON export of the rows currently shown (same filters as the table).
+const exportTable = () => ({
+  title: 'Transactions Report',
+  subtitle: `${from.value || 'start'} to ${to.value || 'today'}`,
+  columns: [
+    { key: 'number', label: 'Number' },
+    { key: 'type', label: 'Type' },
+    { key: 'customer', label: 'Customer' },
+    { key: 'status', label: 'Status' },
+    { key: 'date', label: 'Date', type: 'date' },
+    { key: 'total', label: 'Total', type: 'money' },
+  ],
+  rows: filteredRows.value.map((t) => ({
+    number: t.number,
+    type: t.type,
+    customer: t.customer_name || 'Walk-in',
+    status: t.status,
+    date: String(t.issued_at || t.created_at || '').slice(0, 10),
+    total: t.grand_total,
+  })),
+  totals: { total: grandTotal.value },
+  meta: { company: settingsStore.values.company_name || '' },
 });
 
 function load() {

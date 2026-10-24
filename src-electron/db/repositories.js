@@ -429,6 +429,8 @@ export class SettingsRepository {
 }
 
 /** Payment methods a POS sale can be paid with, in the order they print on reports. */
+import { AccountingRepository } from './accounting-repository.js'
+
 const PAYMENT_METHODS = ['cash', 'speedpoint', 'eft', 'ecocash', 'mpesa', 'cheque']
 
 export class TransactionRepository {
@@ -774,6 +776,9 @@ export class TransactionRepository {
         }
       }
 
+      // Accounting: turn this invoice into journal entries (no-op for quotes/POs).
+      new AccountingRepository(this.db).postTransaction(txId)
+
       return this.find(txId)
     })
     return run()
@@ -861,13 +866,20 @@ export class TransactionRepository {
         }
       }
 
+      // Accounting: re-post from the edited invoice (also clears entries when voided).
+      new AccountingRepository(this.db).postTransaction(id)
+
       return this.find(id)
     })
     return run()
   }
 
   delete(id) {
-    this.db.prepare(`DELETE FROM transactions WHERE id = ?`).run(id) // cascades items via FK
+    // Accounting: remove this invoice's journal entries (and its payments') first.
+    this.db.transaction(() => {
+      new AccountingRepository(this.db).unpostTransaction(id)
+      this.db.prepare(`DELETE FROM transactions WHERE id = ?`).run(id) // cascades items via FK
+    })()
     return { id }
   }
 
@@ -937,6 +949,8 @@ export class TransactionRepository {
           `UPDATE transactions SET status = 'converted', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
         )
         .run(quoteId)
+
+      new AccountingRepository(this.db).postTransaction(invoiceId)
 
       return this.find(invoiceId)
     })

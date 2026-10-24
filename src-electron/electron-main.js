@@ -159,6 +159,10 @@ function createMenu(branding = {}) {
           click: () => mainWindow.webContents.send('navigate', '/reports'),
         },
         {
+          label: 'Accounting',
+          click: () => mainWindow.webContents.send('navigate', '/accounting'),
+        },
+        {
           label: 'Settings',
           accelerator: 'F7',
           click: () => mainWindow.webContents.send('navigate', '/settings'),
