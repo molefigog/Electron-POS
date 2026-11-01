@@ -1,85 +1,102 @@
-# erp-systems (erp-system)
+# New Interior Decorators POS (NID POS)
 
-erp systems
+A desktop point-of-sale and business management application built with Quasar, Vue 3, Electron, and SQLite.
 
-## How To Use This POS (Step-by-Step)
+## Features
 
-1. Start the app and open the Dashboard to confirm data loads.
-2. Go to Settings and set business information (company name, phone, email, address, VAT, currency, print template).
-3. Add products in Products: name, SKU/barcode, selling price, and stock-related details.
-4. Add customers in Customers or create customers directly while making a transaction.
-5. Create a transaction in Transactions:
-   - Choose document type (Quotation, Invoice, or Purchase Order).
-   - Select customer (or leave blank for walk-in).
-   - Add products by search, SKU, or barcode scan.
-   - Edit quantity, price, discount, and tax as needed.
-   - Save the document.
-6. Print or export PDF from the transaction using the selected print template.
-7. Use Stock to monitor item levels and updates.
-8. Use Reports to filter by date range, review totals, print report, or export report PDF.
-9. Use Business Letter page to create and print branded letters when needed.
+- Create quotations, invoices, and purchase orders; convert quotations to invoices.
+- Manage products, customers, suppliers, stock movements, and barcode-scanned sales.
+- Print A4 documents and 80 mm receipts, export PDFs, and create business letters.
+- Track double-entry accounting, expenses, bills, payments, and receivables; export accounting data.
+- Use the app on a single PC or connect multiple PCs to one database over a local network.
+- Optionally back up data to a separately hosted Laravel sync server. Cloud sync is off until configured in Settings.
+- Export product and accounting data to spreadsheet and other supported formats.
 
-## Current Status
+The Lekuka e-invoicing provider can currently be selected in Settings, but it is not connected for invoice submission yet; RSL credentials and certificate setup are still required.
 
-- Authentication is not enabled yet in the current version.
-- Upcoming versions will include authentication.
-- Upcoming versions will include backup saving.
-- Upcoming versions will include sync to Laravel.
+For detailed feature notes, see [CHANGELOG.md](CHANGELOG.md), [ACCOUNTING.md](ACCOUNTING.md), and the [cloud backup guide](docs/cloud-sync/README.md).
 
-## New Version / Feature Requests
+## Use the POS
 
-- Email: molefigw@gmail.com
-- Website: https://www.gw-ent.co.za
+1. Open Dashboard and confirm the application loads.
+2. Set your business details, tax, currency, and print preferences in Settings.
+3. Add products, customers, and suppliers as needed.
+4. Create a quotation, invoice, or purchase order in Transactions. Add items by search, SKU, or barcode scanner, then save.
+5. Print the document, export it as a PDF, or convert a quotation to an invoice.
+6. Use Stock, Accounting, and Reports to manage inventory and review business activity.
+7. Configure a receipt printer, LAN host/client, or cloud backup from Settings when needed.
 
-## Install the dependencies
+## Requirements
+
+- Node.js and npm. The current `package.json` engine range supports Node.js 20, 22, 24, 26, and 28.
+- Windows is required to build the Windows NSIS installer.
+- The project root must contain `nid-pos.sqlite3` when building the Electron installer. The build script checks for it and packages that database file.
+
+## Set up a clone or fork
 
 ```bash
-yarn
-# or
+git clone <your-fork-url>
+cd Electron-POS
 npm install
 ```
 
-### Start the app in development mode (hot-code reloading, error reporting, etc.)
+If you cloned into a folder with a different name, change into that folder instead. Start the app in a browser during development:
 
 ```bash
-quasar dev
+npm run dev
 ```
 
-### Lint the files
+Run the desktop app in development mode:
 
 ```bash
-yarn lint
-# or
-npm run lint
+npm run dev:electron
 ```
 
-### Format the files
+## Change the application icon
+
+After forking or cloning the repository, use [Quasar Icon Genie](https://quasar.dev/icongenie/) to generate the Electron icon files from your own PNG. Icon Genie requires Node.js 22 or later; install it globally:
 
 ```bash
-yarn format
-# or
-npm run format
+npm install --global @quasar/icongenie
 ```
 
-### Build the app for production
+From the project root, run the generator with a square PNG source image (at least 64 x 64 pixels; 1024 x 1024 pixels is recommended):
 
 ```bash
-quasar build
+icongenie generate --mode electron --icon path/to/your-icon.png
 ```
 
-### Build Windows installer (Electron)
+Icon Genie generates the Electron icon assets in `src-electron/icons/`, including `icon.ico` for the Windows installer. Review the generated files, then build the installer to apply the new icon. Commit the generated icon files to your fork if you want to keep the change.
+
+## Build and checks
+
+Build the web application:
+
+```bash
+npm run build
+```
+
+Build the Windows Electron installer:
 
 ```bash
 npm run build:electron
 ```
 
-This build command validates that your existing `nid-pos.sqlite3` is in the project root and packages that exact file with the installer.
+The installer and other Electron build output are written to `dist/electron`. The installer is an NSIS `.exe` file.
 
-Installer output:
+Run the available lint and self-tests:
 
-- Build artifacts and installer files are written under: `dist/electron`
-- The Windows installer is an `.exe` file generated by NSIS.
+```bash
+npm run lint
+npm run sync:selftest
+npm run accounting:selftest
+```
 
-### Customize the configuration
+## Feature requests
+
+- Email: elliot@gw-ent.co.za
+- Website: https://nid.gw-ent.co.za
+
+## Quasar configuration
 
 See [Configuring quasar.config.js](https://v2.quasar.dev/quasar-cli-vite/quasar-config-js).
