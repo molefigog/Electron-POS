@@ -35,7 +35,7 @@ For detailed feature notes, see [CHANGELOG.md](CHANGELOG.md), [ACCOUNTING.md](AC
 ## Set up a clone or fork
 
 ```bash
-git clone <your-fork-url>
+git clone https://github.com/molefigog/Electron-POS
 cd Electron-POS
 npm install
 ```
