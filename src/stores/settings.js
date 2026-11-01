@@ -35,6 +35,7 @@ const DEFAULT_SETTINGS = {
   silent_printing: 'false',
   theme_mode: 'system',
   keyboard_shortcuts: '{}',
+  e_invoice_provider: 'none',
 }
 
 function resolveThemeMode(mode) {

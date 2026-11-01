@@ -4,6 +4,7 @@ import {
 } from './repositories.js';
 import { SyncRepository } from './sync-repository.js';
 import { AccountingRepository } from './accounting-repository.js';
+import { kickCloudSync } from '../sync/index.js';
 import { app, BrowserWindow, dialog, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -318,6 +319,7 @@ export function registerIpcHandlers(ipcMain, db) {
       // args is expected to be an array of positional args, or a single object
       const argArray = Array.isArray(args) ? args : args === undefined ? [] : [args];
       const result = repo[method](...argArray);
+      kickCloudSync(); // cloud backup: upload what was just saved (no-op unless connected)
       // Guarantee the return value is plain, cloneable data. better-sqlite3
       // rows are already plain objects, but this protects against edge cases
       // like BigInt row ids or Date instances slipping through, which the

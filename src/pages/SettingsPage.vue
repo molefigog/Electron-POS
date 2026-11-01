@@ -289,6 +289,8 @@
         </q-card>
 
         <NetworkSettingsCard />
+        <CloudBackupCard />
+        <LekukaIntegrationCard v-model="form.e_invoice_provider" />
       </div>
 
       <!-- ============ SHORTCUTS ============ -->
@@ -334,6 +336,8 @@ import { apiClient } from 'src/services/api-client';
 import { clearSession, connectionState, setConnectionSettings } from 'src/services/connection';
 import TemplateSwitcher from 'src/components/print-templates/TemplateSwitcher.vue';
 import NetworkSettingsCard from 'src/components/NetworkSettingsCard.vue';
+import CloudBackupCard from 'src/components/cloud/CloudBackupCard.vue';
+import LekukaIntegrationCard from 'src/integrations/lekuka/LekukaIntegrationCard.vue';
 import ReceiptPrinterCard from 'src/components/ReceiptPrinterCard.vue';
 import {
   SHORTCUT_ACTIONS, AVAILABLE_COMBOS, formatCombo, defaultShortcutMap, withDefaults, toActionComboMap,
@@ -456,6 +460,7 @@ const form = reactive({
   theme_mode: 'system',
   data_mode: 'local',
   api_url: '',
+  e_invoice_provider: 'none',
   shortcutsByAction: {}, // { [actionId]: combo } - UI-friendly shape; converted to combo->action JSON on save
 });
 

@@ -94,3 +94,26 @@ contextBridge.exposeInMainWorld('networkBridge', {
     return () => ipcRenderer.removeListener('lan:status', listener);
   },
 });
+
+/** Cloud backup (Settings > Cloud backup). Channels live in src-electron/sync/cloud-ipc.js. */
+contextBridge.exposeInMainWorld('cloudBridge', {
+  status: () => ipcRenderer.invoke('cloud:status'),
+  listDevices: (options) => ipcRenderer.invoke('cloud:listDevices', toPlain(options)),
+  connect: (options) => ipcRenderer.invoke('cloud:connect', toPlain(options)),
+  syncNow: () => ipcRenderer.invoke('cloud:syncNow'),
+  uploadAll: () => ipcRenderer.invoke('cloud:uploadAll'),
+  restore: () => ipcRenderer.invoke('cloud:restore'),
+  disconnect: () => ipcRenderer.invoke('cloud:disconnect'),
+  rejected: () => ipcRenderer.invoke('cloud:rejected'),
+  retryRejected: () => ipcRenderer.invoke('cloud:retryRejected'),
+  onStatus: (callback) => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on('cloud:status-changed', listener);
+    return () => ipcRenderer.removeListener('cloud:status-changed', listener);
+  },
+  onRestoreProgress: (callback) => {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('cloud:restore-progress', listener);
+    return () => ipcRenderer.removeListener('cloud:restore-progress', listener);
+  },
+});

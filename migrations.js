@@ -595,6 +595,39 @@ const migrations = [
       `)
     },
   },
+  {
+    version: 18,
+    name: 'add_cloud_sync_outbox',
+    up: (db) => {
+      // Cloud backup ("mirror") - see docs/cloud-sync/README.md.
+      // Only two small tables live here. The triggers that fill the outbox are
+      // generated at app start from src-electron/sync/sync-schema.json, so adding
+      // a column to a synced table never needs another migration.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS sync_outbox (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          entity TEXT NOT NULL,                 -- table name, e.g. 'transactions'
+          row_key TEXT NOT NULL,                -- primary key of the changed row, as text
+          op TEXT NOT NULL CHECK (op IN ('upsert','delete')),
+          payload TEXT,                         -- full row as JSON (NULL for delete)
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          sent_at TEXT,                         -- set once the server acknowledged it
+          rejected_at TEXT,                     -- set if the server refused it (see reject_reason)
+          reject_reason TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_outbox_pending ON sync_outbox(sent_at, rejected_at, id);
+        CREATE INDEX IF NOT EXISTS idx_sync_outbox_row ON sync_outbox(entity, row_key);
+
+        -- One row. applying = 1 while a restore is writing data, so the restore is not queued for upload again.
+        CREATE TABLE IF NOT EXISTS sync_control (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          applying INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT OR IGNORE INTO sync_control (id, applying) VALUES (1, 0);
+      `)
+    },
+  },
 ]
 
 export function runMigrations(db) {

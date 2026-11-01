@@ -1,10 +1,11 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { initDb, getDb, closeDb, getBackupDir, takeRecoveryNotice } from './db/connection.js';
 import { createBackup } from './db/backup.js';
 import { registerIpcHandlers } from './db/ipc-handlers.js';
+import { initCloudSync } from './sync/index.js';
 import { loadShortcutsFromDb, getShortcutMap, comboFromInput } from './shortcuts.js';
 import { lan, clientEndpoint } from './lan/runtime.js';
 import { loadNetworkConfig } from './lan/network-config.js';
@@ -216,6 +217,17 @@ async function createWindow() {
     loadShortcutsFromDb(getDb());
     handlers = registerIpcHandlers(ipcMain, getDb());
   }
+
+  // Cloud backup (optional, off until connected in Settings > Cloud backup). See docs/cloud-sync/README.md
+  initCloudSync({
+    db: lan.mode === 'client' ? null : getDb(),
+    ipcMain,
+    userDataDir: app.getPath('userData'),
+    version: app.getVersion(),
+    safeStorage,
+    role: lan.mode,
+    broadcast: (channel, payload) => BrowserWindow.getAllWindows().forEach((w) => w.webContents.send(channel, payload)),
+  });
 
   if (lan.mode === 'host') {
     try {

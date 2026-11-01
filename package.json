@@ -8,6 +8,8 @@
   "private": true,
   "scripts": {
     "lint": "eslint -c ./eslint.config.js \"./src*/**/*.{js,cjs,mjs,vue}\"",
+    "sync:selftest": "node src-electron/sync/cloud-selftest.mjs",
+    "accounting:selftest": "node src-electron/db/accounting-selftest.mjs",
     "format": "prettier --write \"**/*.{js,vue,scss,html,md,json}\" --ignore-path .gitignore",
     "test": "echo \"No test specified\" && exit 0",
     "dev": "quasar dev",

@@ -50,12 +50,12 @@
           <q-card-section>
             <div class="text-subtitle1 text-weight-medium q-mb-sm">New Version / Feature Requests</div>
             <ul class="help-list">
-              <li><strong>Contact person:</strong>Elliot</li>
+
               <li><strong>Contact:</strong> +266 59073443</li>
-              <li><strong>Email:</strong> molefigw@gmail.com</li>
+              <li><strong>Email:</strong>elliot@gw-ent.co.za</li>
               <li>
                 <strong>Website:</strong>
-                <a href="https://www.gw-ent.co.za" target="_blank" rel="noopener">https://www.gw-ent.co.za</a>
+                <a href="https://www.gw-ent.co.za" target="_blank" rel="noopener">https://nid.gw-ent.co.za</a>
               </li>
             </ul>
           </q-card-section>

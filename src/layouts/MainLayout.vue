@@ -25,6 +25,8 @@
           <q-tooltip>Open saved PDFs</q-tooltip>
         </q-btn>
 
+        <CloudSyncBadge />
+
         <q-btn flat dense round icon="sync" :loading="syncing" @click="runSync">
           <q-tooltip>Sync offline changes</q-tooltip>
         </q-btn>
@@ -228,6 +230,7 @@ import { emitUiEvent } from 'src/composables/useUiEvents';
 import TemplateSwitcher from 'src/components/print-templates/TemplateSwitcher.vue';
 import TransactionList from 'src/components/transactions/TransactionList.vue';
 import { syncPendingChanges } from 'src/services/sync';
+import CloudSyncBadge from 'src/components/cloud/CloudSyncBadge.vue';
 
 const route = useRoute();
 const $q = useQuasar();

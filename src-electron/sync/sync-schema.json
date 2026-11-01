@@ -1,0 +1,317 @@
+{
+  "$comment": "SINGLE SOURCE OF TRUTH for cloud sync. Keep byte-identical in the desktop repo (src-electron/sync/) and the Laravel repo (resources/sync/). Edit here, copy to the other repo, then see docs/cloud-sync/README.md \"Changing the schema\".",
+  "version": 1,
+  "order": [
+    "categories",
+    "taxes",
+    "settings",
+    "accounts",
+    "customers",
+    "suppliers",
+    "products",
+    "transactions",
+    "transaction_items",
+    "transaction_payments",
+    "stock_movements",
+    "customer_payments",
+    "journal_entries",
+    "journal_lines",
+    "expenses",
+    "supplier_bills",
+    "bill_payments"
+  ],
+  "types": {
+    "int": "integer",
+    "bool": "0/1 integer",
+    "decimal": "REAL -> DECIMAL(16,4)",
+    "string": "varchar(255)",
+    "text": "text",
+    "longtext": "longtext"
+  },
+  "entities": {
+    "categories": {
+      "table": "categories",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "name": "string",
+        "created_at": "string"
+      }
+    },
+    "taxes": {
+      "table": "taxes",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "name": "string",
+        "rate": "decimal",
+        "is_default": "bool",
+        "created_at": "string"
+      }
+    },
+    "settings": {
+      "table": "settings",
+      "key": {
+        "name": "key",
+        "type": "string"
+      },
+      "columns": {
+        "value": "longtext"
+      },
+      "skipKeyPrefixes": [
+        "cloud_",
+        "device_",
+        "lan_"
+      ]
+    },
+    "accounts": {
+      "table": "accounts",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "code": "string",
+        "name": "string",
+        "type": "string",
+        "system_key": "string",
+        "is_system": "bool",
+        "is_active": "bool",
+        "created_at": "string"
+      }
+    },
+    "customers": {
+      "table": "customers",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "name": "string",
+        "email": "string",
+        "phone": "string",
+        "address": "text",
+        "tax_number": "string",
+        "created_at": "string",
+        "updated_at": "string"
+      }
+    },
+    "suppliers": {
+      "table": "suppliers",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "name": "string",
+        "phone": "string",
+        "email": "string",
+        "address": "text",
+        "tax_number": "string",
+        "payment_terms": "string",
+        "created_at": "string",
+        "updated_at": "string"
+      }
+    },
+    "products": {
+      "table": "products",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "name": "string",
+        "sku": "string",
+        "barcode": "string",
+        "cost_price": "decimal",
+        "selling_price": "decimal",
+        "stock_qty": "decimal",
+        "reorder_level": "decimal",
+        "category_id": "int",
+        "tax_id": "int",
+        "is_active": "bool",
+        "created_at": "string",
+        "updated_at": "string"
+      }
+    },
+    "transactions": {
+      "table": "transactions",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "number": "string",
+        "type": "string",
+        "status": "string",
+        "customer_id": "int",
+        "reference_quotation_id": "int",
+        "reference_quotation_number": "string",
+        "manual_reference": "string",
+        "subtotal": "decimal",
+        "discount_total": "decimal",
+        "tax_total": "decimal",
+        "grand_total": "decimal",
+        "notes": "text",
+        "issued_at": "string",
+        "created_at": "string",
+        "updated_at": "string",
+        "supplier_id": "int",
+        "amount_tendered": "decimal"
+      }
+    },
+    "transaction_items": {
+      "table": "transaction_items",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "transaction_id": "int",
+        "product_id": "int",
+        "name": "string",
+        "quantity": "decimal",
+        "unit_price": "decimal",
+        "discount_pct": "decimal",
+        "tax_rate": "decimal",
+        "line_total": "decimal",
+        "box_size": "decimal",
+        "box_count": "decimal",
+        "unit_cost": "decimal"
+      }
+    },
+    "transaction_payments": {
+      "table": "transaction_payments",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "transaction_id": "int",
+        "method": "string",
+        "amount": "decimal"
+      }
+    },
+    "stock_movements": {
+      "table": "stock_movements",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "product_id": "int",
+        "type": "string",
+        "quantity": "decimal",
+        "reason": "string",
+        "reference_type": "string",
+        "reference_id": "int",
+        "created_at": "string"
+      }
+    },
+    "customer_payments": {
+      "table": "customer_payments",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "transaction_id": "int",
+        "customer_id": "int",
+        "method": "string",
+        "amount": "decimal",
+        "paid_at": "string",
+        "reference": "text",
+        "notes": "text",
+        "created_at": "string"
+      }
+    },
+    "journal_entries": {
+      "table": "journal_entries",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "entry_date": "string",
+        "memo": "text",
+        "source_type": "string",
+        "source_id": "int",
+        "created_at": "string"
+      }
+    },
+    "journal_lines": {
+      "table": "journal_lines",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "entry_id": "int",
+        "account_id": "int",
+        "debit": "decimal",
+        "credit": "decimal",
+        "memo": "text"
+      }
+    },
+    "expenses": {
+      "table": "expenses",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "expense_date": "string",
+        "account_id": "int",
+        "supplier_id": "int",
+        "payee": "text",
+        "description": "text",
+        "amount": "decimal",
+        "tax_amount": "decimal",
+        "method": "string",
+        "reference": "text",
+        "notes": "text",
+        "created_at": "string"
+      }
+    },
+    "supplier_bills": {
+      "table": "supplier_bills",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "bill_number": "string",
+        "supplier_id": "int",
+        "purchase_order_id": "int",
+        "bill_date": "string",
+        "due_date": "string",
+        "account_id": "int",
+        "subtotal": "decimal",
+        "tax_amount": "decimal",
+        "total": "decimal",
+        "status": "string",
+        "notes": "text",
+        "created_at": "string"
+      }
+    },
+    "bill_payments": {
+      "table": "bill_payments",
+      "key": {
+        "name": "id",
+        "type": "int"
+      },
+      "columns": {
+        "bill_id": "int",
+        "method": "string",
+        "amount": "decimal",
+        "paid_at": "string",
+        "reference": "text",
+        "created_at": "string"
+      }
+    }
+  }
+}
